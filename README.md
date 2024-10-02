@@ -105,6 +105,12 @@ python x_recorder.py -c /path/to/cookie/file [-a YOUR_API_ACCESS_TOKEN] [-t TIME
 
 Contributions are welcome! Please feel free to submit a Pull Request.
 
+## Donations
+
+If you find X-Recorder useful and would like to support its development, you can buy me a coffee! Your support is greatly appreciated.
+
+[![Buy Me A Coffee](https://cdn.buymeacoffee.com/buttons/default-orange.png)](https://buymeacoffee.com/robodigitalis)
+
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
