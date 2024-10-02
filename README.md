@@ -7,16 +7,16 @@ X-Recorder is a powerful tool for capturing, archiving, and downloading X Spaces
 - Search for X Spaces by profile or direct link
 - Flexible timeframe options: 7, 14, 30, 90, or 120 days
 - Easy-to-use command-line interface
-- Comprehensive summary of found recordings
+- Brief description, date, and time of recorded spaces on X in the specified timeframe
 - Automatically download audio and video spaces
 - Error handling for unsupported space types
 
 ## Prerequisites
 
-To use X-Recorder, you need to obtain two important pieces of information:
+To use X-Recorder, you need to obtain the following:
 
 1. X (Twitter) Cookie File
-2. X (Twitter) API Access Token
+2. X (Twitter) API Access Token (required only if searching for spaces by profile)
 
 ### Obtaining the X (Twitter) Cookie File
 
@@ -32,9 +32,9 @@ To use X-Recorder, you need to obtain two important pieces of information:
 
 6. Save the exported cookie file in Netscape format to a location of your choice.
 
-### Obtaining the X (Twitter) API Access Token
+### Obtaining the X (Twitter) API Access Token (Required only if searching for spaces by profile)
 
-To obtain an API access token, you need to have a developer account on the X (Twitter) platform. Follow these steps:
+If you want to search for spaces by profile instead of using a direct space link, you need to obtain an API access token. To do this, you need to have a developer account on the X (Twitter) platform. Follow these steps:
 
 1. Go to the X (Twitter) Developer Portal (https://developer.twitter.com/) and sign in with your X (Twitter) account.
 
@@ -76,23 +76,30 @@ Please note that to access certain features and endpoints of the X (Twitter) API
 Run the script with the following command:
 
 ```
-python x_recorder.py -c /path/to/cookie/file -a YOUR_API_ACCESS_TOKEN [-t TIMEFRAME] [-o OUTPUT_DIR] [-d] [-p PROFILE]
+python x_recorder.py -c /path/to/cookie/file [-a YOUR_API_ACCESS_TOKEN] [-t TIMEFRAME] [-o OUTPUT_DIR] [-d DEBUG] [-p X_PROFILE] [-s SPACE_LINK]
 ```
 
 - `-c` or `--cookie`: Required. Specify the full path to the X (Twitter) cookie file in Netscape format.
-- `-a` or `--access-token`: Required. Specify your X (Twitter) API access token.
+- `-a` or `--access-token`: Optional. Specify your X (Twitter) API access token. Required only if searching for spaces by profile.
 - `-t` or `--timeframe`: Optional. Specify the number of days to search for recordings. Choose from 7, 14, 30, 90, or 120 days. Default is 7 days.
 - `-o` or `--output`: Optional. Specify the output directory for saving recordings. Default is `~/Downloads/X-Recorder`.
 - `-d` or `--debug`: Optional. Enable debug mode for verbose output (API connections, commands, and downloads).
-- `-p` or `--profile`: Optional. Specify the X profile name(s) to search for spaces (comma-separated if multiple).
+- `-p` or `--profile`: Optional. Specify the X profile name(s) to search for spaces (comma-separated if multiple). Requires the API access token.
+- `-s` or `--space`: Optional. Specify the direct link to a specific X Space. If provided, the API access token is not required.
 
-## Example
+## Examples
 
-```
-python x_recorder.py -c /path/to/cookie/file -a YOUR_API_ACCESS_TOKEN -t 30 -o /path/to/custom/output -d -p aiarttoday420
-```
+1. Download a specific space using a direct link:
+   ```
+   python x_recorder.py -c /path/to/cookie/file -s https://x.com/i/spaces/1vAxROLeoDzKl
+   ```
 
-This command will search for X Spaces recordings from the past 30 days for the profile "aiarttoday420", save them in the specified output directory, and enable debug mode for verbose output.
+2. Search for spaces by profile:
+   ```
+   python x_recorder.py -c /path/to/cookie/file -a YOUR_API_ACCESS_TOKEN -t 30 -o /path/to/custom/output -d -p aiarttoday420
+   ```
+
+   This command will search for X Spaces recordings from the past 30 days for the profile "aiarttoday420", save them in the specified output directory, and enable debug mode for verbose output.
 
 ## Contributing
 
@@ -105,4 +112,3 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## Keywords
 
 X Spaces, Twitter Spaces, audio recording, video recording, podcast archiving, social media content, live audio, live video, space downloader, X API, Twitter API, audio archiver, video archiver, space recorder
-

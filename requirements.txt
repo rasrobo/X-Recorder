@@ -1,0 +1,4 @@
+requests
+pandas
+twspace-dl
+yt-dlp
