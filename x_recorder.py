@@ -4,6 +4,8 @@ import pandas as pd
 from datetime import datetime, timedelta
 import subprocess
 import os
+import cv2
+import numpy as np
 
 # Twitter API endpoint and headers
 api_url = 'https://api.x.com/2/spaces'
@@ -31,13 +33,6 @@ def get_user_input(args):
         cookie_path = args.cookie
 
     return {'cookie_path': cookie_path}
-
-def generate_output_filename(space_id, title):
-    current_date = datetime.now().strftime("%Y-%m-%d")
-    formatted_title = title.replace(' ', '-')
-    return f'{current_date}-{formatted_title}-#{space_id}'
-import subprocess
-import re
 
 def download_space(space_url, output_path, cookie_path, debug):
     try:
@@ -74,7 +69,101 @@ def download_space(space_url, output_path, cookie_path, debug):
                 print(f"Successfully downloaded space using yt-dlp: {space_url}")
         except subprocess.CalledProcessError as e:
             print(f'Error downloading space: {e}')
-            
+            raise  # Re-raise the exception to be caught in the main function
+
+def detect_aspect_ratio_changes(video_path, threshold=0.01):
+    cap = cv2.VideoCapture(video_path)
+    aspect_ratios = []
+    frame_count = 0
+    prev_ratio = None
+
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+        frame_count += 1
+        height, width = frame.shape[:2]
+        aspect_ratio = width / height
+        
+        if prev_ratio is None or abs(aspect_ratio - prev_ratio) > threshold:
+            aspect_ratios.append((frame_count, aspect_ratio))
+            prev_ratio = aspect_ratio
+
+    cap.release()
+    return aspect_ratios
+
+def split_video_by_aspect_ratio(video_path, aspect_ratios):
+    cap = cv2.VideoCapture(video_path)
+    segments = []
+    current_segment_frames = []
+    segment_index = 0
+    frame_count = 0
+
+    for next_change in aspect_ratios:
+        while frame_count < next_change[0]:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            current_segment_frames.append(frame)
+            frame_count += 1
+        
+        if current_segment_frames:
+            segments.append((segment_index, current_segment_frames, next_change[1]))
+            segment_index += 1
+            current_segment_frames = []
+
+    # Add remaining frames to the last segment
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        current_segment_frames.append(frame)
+    
+    if current_segment_frames:
+        segments.append((segment_index, current_segment_frames, aspect_ratios[-1][1]))
+
+    cap.release()
+    return segments
+
+def recombine_segments(segments, output_path):
+    if not segments:
+        return
+    
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = None
+
+    for index, segment, aspect_ratio in segments:
+        if not segment:
+            continue
+        height, width = segment[0].shape[:2]
+        if out is None or out.get(cv2.CAP_PROP_FRAME_WIDTH) != width or out.get(cv2.CAP_PROP_FRAME_HEIGHT) != height:
+            if out is not None:
+                out.release()
+            out = cv2.VideoWriter(output_path, fourcc, 30.0, (width, height))
+        
+        for frame in segment:
+            out.write(frame)
+
+    if out is not None:
+        out.release()
+
+def process_video(input_path, output_path):
+    if not os.path.exists(input_path):
+        print(f"Error: Input file not found: {input_path}")
+        return
+
+    print("Detecting aspect ratio changes...")
+    aspect_ratios = detect_aspect_ratio_changes(input_path)
+    print(f"Detected {len(aspect_ratios)} aspect ratio changes")
+
+    print("Splitting video into segments...")
+    segments = split_video_by_aspect_ratio(input_path, aspect_ratios)
+    print(f"Split video into {len(segments)} segments")
+
+    print("Recombining segments...")
+    recombine_segments(segments, output_path)
+    print("Video processing complete!")
+
 def main():
     args = parse_arguments()
     
@@ -89,14 +178,17 @@ def main():
         space_url = args.space
         space_id = space_url.split('/')[-1]
         
-        # Generate a default title (you may want to fetch the actual title if possible)
-        default_title = "𝕏-Space"
-        
         # Generate the output filename
-        output_filename = generate_output_filename(space_id, default_title)
+        output_filename = f"{datetime.now().strftime('%Y-%m-%d')}-X-Space-#{space_id}"
         output_path = os.path.join(args.output, output_filename)
         
-        download_space(space_url, output_path, user_input['cookie_path'], args.debug)
+        print(f"Downloading X Space from: {space_url}")
+        try:
+            download_space(space_url, output_path, user_input['cookie_path'], args.debug)
+            print("Download complete. Processing video...")
+            process_video(f"{output_path}.m4a", f"{output_path}_processed.mp4")
+        except subprocess.CalledProcessError as e:
+            print(f"Error occurred during download: {e}")
     else:
         print("Please provide a direct space link using the -s option.")
 

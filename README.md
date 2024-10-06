@@ -1,52 +1,72 @@
-# X-Recorder: Archive and Download X Spaces
+# 𝕏-Recorder: Archive and Download 𝕏 Spaces
 
-X-Recorder is a powerful tool for capturing, archiving, and downloading X Spaces (formerly Twitter Spaces). It supports both audio and video spaces, allowing you to never miss your favorite content again!
+𝕏-Recorder is a powerful tool for capturing, archiving, and downloading 𝕏 Spaces (formerly Twitter Spaces). It supports both audio and video spaces, allowing you to never miss your favorite content again!
 
 ## Features
 
-- Search for X Spaces by profile or direct link
-- Flexible timeframe options: 7, 14, 30, 90, or 120 days
+- Download 𝕏 Spaces using direct links
+- Automatic aspect ratio change detection and correction
 - Easy-to-use command-line interface
-- Brief description, date, and time of recorded spaces on X in the specified timeframe
-- Automatically download audio and video spaces
+- Automatic fallback to yt-dlp if twspace-dl fails
 - Error handling for unsupported space types
+- Debug mode for verbose output
 
 ## Prerequisites
 
-To use X-Recorder, you need to obtain the following:
+To use 𝕏-Recorder, you need:
 
-1. X (Twitter) Cookie File
-2. X (Twitter) API Access Token (required only if searching for spaces by profile)
+1. 𝕏 (Twitter) Cookie File
+2. Python 3.6 or higher
+3. OpenCV library
 
-### Obtaining the X (Twitter) Cookie File
+### Obtaining the 𝕏 (Twitter) Cookie File
 
-1. Install the "Cookie-Editor" Chrome extension from the Chrome Web Store: [Cookie Editor](https://chrome.google.com/webstore/detail/cookie-editor/hlkenndednhfkekhgcdicdfddnkalmdm)
+You need to obtain the 𝕏 (Twitter) cookie file in Netscape format. Here's how to do it without using a browser plugin:
 
-2. Log in to your X (Twitter) account in the Chrome browser.
+1. Open your web browser (Chrome, Firefox, or Edge) and go to 𝕏 (Twitter).
 
-3. Click on the "Cookie-Editor" extension icon in the Chrome toolbar.
+2. Log in to your 𝕏 account if you haven't already.
 
-4. In the Cookie-Editor window, select the "X.com" domain from the list of websites.
+3. Open the browser's Developer Tools:
+   - Chrome/Edge: Press F12 or Ctrl+Shift+I (Cmd+Option+I on Mac)
+   - Firefox: Press F12 or Ctrl+Shift+I (Cmd+Option+I on Mac)
 
-5. Click on the "Export" button and choose "Netscape HTTP Cookie File" as the format.
+4. Go to the "Network" tab in the Developer Tools.
 
-6. Save the exported cookie file in Netscape format to a location of your choice.
+5. Refresh the 𝕏 page.
 
-### Obtaining the X (Twitter) API Access Token (Required only if searching for spaces by profile)
+6. In the Network tab, find any request to "twitter.com" or "x.com".
 
-If you want to search for spaces by profile instead of using a direct space link, you need to obtain an API access token. To do this, you need to have a developer account on the X (Twitter) platform. Follow these steps:
+7. Click on this request and look for the "Cookies" section in the request headers.
 
-1. Go to the X (Twitter) Developer Portal (https://developer.twitter.com/) and sign in with your X (Twitter) account.
+8. Copy all the cookie data. It should look something like this:
+   ```
+   auth_token=1234567890abcdef; ct0=abcdefghijklmnop; ...
+   ```
 
-2. Create a new developer app or select an existing one.
+9. Open a text editor and create a new file.
 
-3. In your app's dashboard, navigate to the "Keys and Tokens" section.
+10. At the top of the file, add the following line:
+    ```
+    # Netscape HTTP Cookie File
+    ```
 
-4. Generate a new access token and access token secret for your app.
+11. For each cookie in the data you copied, add a line in this format:
+    ```
+    .twitter.com	TRUE	/	TRUE	1767225600	cookie_name	cookie_value
+    ```
+    Replace `cookie_name` and `cookie_value` with the actual name and value of each cookie.
 
-5. Copy the access token and keep it safe. You will need it when running the X-Recorder script.
+12. Save the file with a `.txt` extension, for example `x_cookies.txt`.
 
-Please note that to access certain features and endpoints of the X (Twitter) API, you may need to have a Premium or Enterprise subscription. Check the X (Twitter) API documentation for more information on the available subscription plans and their limitations.
+Example of the final cookie file content:
+```
+# Netscape HTTP Cookie File
+.twitter.com	TRUE	/	TRUE	1767225600	auth_token	1234567890abcdef
+.twitter.com	TRUE	/	TRUE	1767225600	ct0	abcdefghijklmnop
+```
+
+Make sure to keep this file secure and do not share it, as it contains your login information.
 
 ## Installation
 
@@ -70,46 +90,56 @@ Please note that to access certain features and endpoints of the X (Twitter) API
    ```
    pip install yt-dlp
    ```
+6. Install OpenCV:
+   ```
+   pip install opencv-python
+   ```
 
 ## Usage
 
 Run the script with the following command:
 
 ```
-python x_recorder.py -c /path/to/cookie/file [-a YOUR_API_ACCESS_TOKEN] [-t TIMEFRAME] [-o OUTPUT_DIR] [-d DEBUG] [-p X_PROFILE] [-s SPACE_LINK]
+python 𝕏_recorder.py -c /path/to/cookie/file -s SPACE_LINK [-o OUTPUT_DIR] [-d]
 ```
 
-- `-c` or `--cookie`: Required. Specify the full path to the X (Twitter) cookie file in Netscape format.
-- `-a` or `--access-token`: Optional. Specify your X (Twitter) API access token. Required only if searching for spaces by profile.
-- `-t` or `--timeframe`: Optional. Specify the number of days to search for recordings. Choose from 7, 14, 30, 90, or 120 days. Default is 7 days.
-- `-o` or `--output`: Optional. Specify the output directory for saving recordings. Default is `~/Downloads/X-Recorder`.
-- `-d` or `--debug`: Optional. Enable debug mode for verbose output (API connections, commands, and downloads).
-- `-p` or `--profile`: Optional. Specify the X profile name(s) to search for spaces (comma-separated if multiple). Requires the API access token.
-- `-s` or `--space`: Optional. Specify the direct link to a specific X Space. If provided, the API access token is not required.
+- `-c` or `--cookie`: Required. Specify the full path to the 𝕏 (Twitter) cookie file in Netscape format.
+- `-s` or `--space`: Required. Specify the direct link to a specific 𝕏 Space.
+- `-o` or `--output`: Optional. Specify the output directory for saving recordings. Default is `~/Downloads/𝕏-Recorder`.
+- `-d` or `--debug`: Optional. Enable debug mode for verbose output.
 
 ## Examples
 
-1. Download a specific space using a direct link:
+1. Download a specific space:
    ```
-   python x_recorder.py -c /path/to/cookie/file -s https://x.com/i/spaces/1vAxROLeoDzKl
-   ```
-
-2. Search for spaces by profile:
-   ```
-   python x_recorder.py -c /path/to/cookie/file -a YOUR_API_ACCESS_TOKEN -t 30 -o /path/to/custom/output -d -p aiarttoday420
+   python 𝕏_recorder.py -c /path/to/cookie/file -s https://twitter.com/i/spaces/1RDGlyLmRPrJL
    ```
 
-   This command will search for X Spaces recordings from the past 30 days for the profile "aiarttoday420", save them in the specified output directory, and enable debug mode for verbose output.
+2. Download a space with debug output:
+   ```
+   python 𝕏_recorder.py -c /path/to/cookie/file -s https://twitter.com/i/spaces/1RDGlyLmRPrJL -d
+   ```
+
+3. Download a space to a specific output directory:
+   ```
+   python 𝕏_recorder.py -c /path/to/cookie/file -s https://twitter.com/i/spaces/1RDGlyLmRPrJL -o /path/to/custom/output
+   ```
+
+## Output
+
+The script will generate two files in the specified output directory:
+1. The original downloaded space file (usually in .m4a format)
+2. A processed video file with corrected aspect ratios (in .mp4 format)
+
+## Troubleshooting
+
+- If you encounter a "ModuleNotFoundError" for cv2, make sure you have installed OpenCV using `pip install opencv-python`.
+- If the download fails, check that your cookie file is up to date and that you have the necessary permissions to access the 𝕏 Space.
+- For any other issues, run the script with the `-d` flag to get more detailed debug output.
 
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
-
-## Donations
-
-If you find X-Recorder useful and would like to support its development, you can buy me a coffee! Your support is greatly appreciated.
-
-[![Buy Me A Coffee](https://cdn.buymeacoffee.com/buttons/default-orange.png)](https://buymeacoffee.com/robodigitalis)
 
 ## License
 
@@ -117,4 +147,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Keywords
 
-X Spaces, Twitter Spaces, audio recording, video recording, podcast archiving, social media content, live audio, live video, space downloader, X API, Twitter API, audio archiver, video archiver, space recorder
+X Spaces, Twitter Spaces, audio recording, video recording, podcast archiving, social media content, live audio, live video, space downloader, X API, Twitter API, audio archiver, video archiver, space recorder, aspect ratio correction
