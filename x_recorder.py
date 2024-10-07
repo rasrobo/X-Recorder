@@ -66,11 +66,11 @@ def download_space(space_url, output_path, cookie_path, debug):
     existing_file = check_tmp_for_existing_files(space_id)
 
     if existing_file:
-        print(f"Found previously downloaded video at {existing_file}, using it for processing.")
+        print(f"Found previously downloaded file at {existing_file}, using it for processing.")
         shutil.copy2(existing_file, output_path)
         return
 
-    print(f"Video not found in /tmp, initiating download...")
+    print(f"File not found in /tmp, initiating download...")
 
     temp_file_path = f'/tmp/X-Space-{space_id}_temp.m4a'
 
@@ -80,38 +80,27 @@ def download_space(space_url, output_path, cookie_path, debug):
         if debug:
             print(f"Running command: {command}")
         
-        process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-        
-        for line in process.stderr:
-            if debug:
-                print(line, end='')
-            if "HTTP error 400 Bad Request" in line:
-                if debug:
-                    print("Detected HTTP 400 error. Switching to yt-dlp.")
-                process.terminate()
-                raise subprocess.CalledProcessError(1, command)
-        
-        process.wait()
-        if process.returncode != 0:
-            raise subprocess.CalledProcessError(process.returncode, command)
+        subprocess.run(command, shell=True, check=True)
         
         if debug:
             print(f"Successfully downloaded space to {temp_file_path}")
         
         # Copy the downloaded file to the output path
         shutil.copy2(temp_file_path, output_path)
+        os.remove(temp_file_path)  # Clean up the temporary file
     except subprocess.CalledProcessError:
         try:
             # If twspace-dl fails, attempt to download the space using yt-dlp
             command = f'yt-dlp "{space_url}" --cookies "{cookie_path}" -o "{temp_file_path}"'
             if debug:
-                print(f"Running command: {command}")
+                print(f"twspace-dl failed. Trying yt-dlp with command: {command}")
             subprocess.run(command, shell=True, check=True)
             if debug:
                 print(f"Successfully downloaded space using yt-dlp to {temp_file_path}")
             
             # Copy the downloaded file to the output path
             shutil.copy2(temp_file_path, output_path)
+            os.remove(temp_file_path)  # Clean up the temporary file
         except subprocess.CalledProcessError as e:
             print(f'Error downloading space: {e}')
             raise  # Re-raise the exception to be caught in the main function
