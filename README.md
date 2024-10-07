@@ -1,11 +1,12 @@
-# 𝕏-Recorder: Archive and Download 𝕏 Spaces
+# 𝕏-Recorder: Ultimate Twitter Spaces Recorder
 
-𝕏-Recorder is a powerful tool for capturing, archiving, and downloading 𝕏 Spaces (formerly Twitter Spaces). It supports both audio and video spaces, ensuring you never miss your favorite content.
+𝕏-Recorder is a powerful tool for capturing, archiving, and downloading pre-recorded Twitter Spaces (now known as 𝕏 Spaces). It's like a VCR for your favorite audio and video content!
 
 ## Key Features
 
-- Download 𝕏 Spaces using direct links
-- Automatic aspect ratio change detection and correction
+- Download missed 𝕏 Spaces using direct links
+- Supports both audio and video spaces
+- Automatic aspect ratio correction for video spaces
 - Smart fallback system (twspace-dl to yt-dlp)
 - Efficient handling of previously downloaded spaces
 - Debug mode for troubleshooting
@@ -19,7 +20,7 @@
 ## Quick Start
 
 1. Clone and set up:
-   ```
+   ```bash
    git clone https://github.com/rasrobo/X-Recorder.git
    cd X-Recorder
    pip install -r requirements.txt
@@ -27,7 +28,7 @@
    ```
 
 2. Run the script:
-   ```
+   ```bash
    python x_recorder.py -c /path/to/cookie/file -s SPACE_LINK
    ```
 
@@ -35,13 +36,13 @@
 
 ### Custom Output Directory
 
-```
+```bash
 python x_recorder.py -c /path/to/cookie/file -s SPACE_LINK -o /custom/output/path
 ```
 
 ### Debug Mode
 
-```
+```bash
 python x_recorder.py -c /path/to/cookie/file -s SPACE_LINK -d
 ```
 
@@ -72,6 +73,13 @@ The script generates two files:
 - If download fails: Check cookie file and permissions.
 - Use `-d` flag for verbose debug output.
 
+## Donations
+
+If you find this software useful and would like to support its development, you can buy me a coffee! Your support is greatly appreciated.
+
+[![Buy Me A Coffee](https://cdn.buymeacoffee.com/buttons/default-orange.png)](https://buymeacoffee.com/robodigitalis)
+
+
 ## Contributing
 
 We welcome contributions! Please submit a Pull Request or open an Issue.
@@ -82,6 +90,6 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 ---
 
-𝕏-Recorder: Your go-to solution for archiving Twitter Spaces. Perfect for podcast enthusiasts, social media managers, and content creators.
+𝕏-Recorder: Your go-to solution for recording and archiving Twitter Spaces. Perfect for podcast enthusiasts, social media managers, and content creators.
 
 Keywords: X Spaces, Twitter Spaces, audio recording, video recording, podcast archiving, social media content, live audio, live video, space downloader, X API, Twitter API, audio archiver, video archiver, space recorder, aspect ratio correction
