@@ -66,17 +66,17 @@ def download_space(space_url, output_path, cookie_path, debug):
     existing_file = check_tmp_for_existing_files(space_id)
 
     if existing_file:
-        print(f"Found previously downloaded file at {existing_file}, using it for processing.")
+        print(f"Found previously downloaded video at {existing_file}, using it for processing.")
         shutil.copy2(existing_file, output_path)
         return
 
-    print(f"File not found in /tmp, initiating download...")
+    print(f"Video not found in /tmp, initiating download...")
 
     temp_file_path = f'/tmp/X-Space-{space_id}_temp.m4a'
 
     try:
-        # Attempt to download the space using twspace-dl
-        command = f'twspace-dl -c "{cookie_path}" -i "{space_url}" -o "{temp_file_path}"'
+        # Attempt to download the space using twspace_dl
+        command = f'twspace_dl -c "{cookie_path}" -i "{space_url}" -o "{temp_file_path}"'
         if debug:
             print(f"Running command: {command}")
         
@@ -90,10 +90,10 @@ def download_space(space_url, output_path, cookie_path, debug):
         os.remove(temp_file_path)  # Clean up the temporary file
     except subprocess.CalledProcessError:
         try:
-            # If twspace-dl fails, attempt to download the space using yt-dlp
+            # If twspace_dl fails, attempt to download the space using yt-dlp
             command = f'yt-dlp "{space_url}" --cookies "{cookie_path}" -o "{temp_file_path}"'
             if debug:
-                print(f"twspace-dl failed. Trying yt-dlp with command: {command}")
+                print(f"twspace_dl failed. Trying yt-dlp with command: {command}")
             subprocess.run(command, shell=True, check=True)
             if debug:
                 print(f"Successfully downloaded space using yt-dlp to {temp_file_path}")
