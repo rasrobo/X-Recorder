@@ -14,6 +14,7 @@ import hashlib
 import pickle
 import json
 import shutil
+import re
 
 # Twitter API endpoint and headers
 api_url = 'https://api.x.com/2/spaces'
@@ -97,7 +98,6 @@ def download_space(space_url, output_path, cookie_path, debug):
         
         # Copy the downloaded file to the output path
         shutil.copy2(temp_file_path, output_path)
-        os.remove(temp_file_path)  # Remove the temporary file after copying
     except subprocess.CalledProcessError:
         try:
             # If twspace-dl fails, attempt to download the space using yt-dlp
@@ -110,7 +110,6 @@ def download_space(space_url, output_path, cookie_path, debug):
             
             # Copy the downloaded file to the output path
             shutil.copy2(temp_file_path, output_path)
-            os.remove(temp_file_path)  # Remove the temporary file after copying
         except subprocess.CalledProcessError as e:
             print(f'Error downloading space: {e}')
             raise  # Re-raise the exception to be caught in the main function
@@ -167,27 +166,37 @@ def split_video_segment(input_path, start_frame, end_frame, aspect_ratio):
     cap.release()
     return (segment_frames, aspect_ratio)
 
-def recombine_segments(segments, output_path):
+def recombine_segments(segments, output_path, debug):
     if not segments:
+        print("No segments to recombine.")
         return
-    
+
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = None
 
-    for segment_frames, aspect_ratio in segments:
+    for i, (segment_frames, aspect_ratio) in enumerate(segments):
         if not segment_frames:
+            print(f"Skipping empty segment {i}")
             continue
         height, width = segment_frames[0].shape[:2]
         if out is None or out.get(cv2.CAP_PROP_FRAME_WIDTH) != width or out.get(cv2.CAP_PROP_FRAME_HEIGHT) != height:
             if out is not None:
                 out.release()
             out = cv2.VideoWriter(output_path, fourcc, 30.0, (width, height))
+            if debug:
+                print(f"Created new VideoWriter for segment {i} with dimensions {width}x{height}")
         
         for frame in segment_frames:
             out.write(frame)
+        
+        if debug:
+            print(f"Processed segment {i} with {len(segment_frames)} frames")
 
     if out is not None:
         out.release()
+        print(f"Video saved to {output_path}")
+    else:
+        print("Error: No video was written")
 
 def save_checkpoint(segments, output_path):
     checkpoint_path = f"{os.path.splitext(output_path)[0]}_checkpoint.pkl"
@@ -207,57 +216,46 @@ def process_video(input_path, output_path, debug):
         return
 
     try:
-        checkpoint = load_checkpoint(output_path)
-        if checkpoint:
-            print("Resuming from checkpoint...")
-            segments = checkpoint
-        else:
-            print("Detecting aspect ratio changes...")
-            aspect_ratios = detect_aspect_ratio_changes(input_path)
-            print(f"Detected {len(aspect_ratios)} aspect ratio changes")
+        print("Detecting aspect ratio changes...")
+        aspect_ratios = detect_aspect_ratio_changes(input_path)
+        print(f"Detected {len(aspect_ratios)} aspect ratio changes")
 
+        if len(aspect_ratios) == 1:
+            print("Only one aspect ratio detected. Copying the entire video.")
+            shutil.copy2(input_path, output_path)
+            print(f"Video copied to {output_path}")
+        else:
             print("Splitting video into segments...")
             segments = []
             for i, (start, end) in enumerate(zip(aspect_ratios[:-1], aspect_ratios[1:])):
-                cpu_usage, mem_usage = monitor_resources()
-                if debug:
-                    print(f"CPU Usage: {cpu_usage}% | RAM Usage: {mem_usage}%")
-                if cpu_usage > 90 or mem_usage > 90:
-                    print("High resource usage detected. Saving checkpoint and pausing...")
-                    save_checkpoint(segments, output_path)
-                    time.sleep(5)  # Wait for 5 seconds before continuing
                 segment = split_video_segment(input_path, start[0], end[0], start[1])
                 segments.append(segment)
                 print(f"Processed segment {i+1}/{len(aspect_ratios)-1}")
-                save_checkpoint(segments, output_path)
 
-        print("Recombining segments...")
-        recombine_segments(segments, output_path)
+            print("Recombining segments...")
+            recombine_segments(segments, output_path, debug)
+
         print("Video processing complete!")
-        
-        checkpoint_path = f"{os.path.splitext(output_path)[0]}_checkpoint.pkl"
-        if os.path.exists(checkpoint_path):
-            os.remove(checkpoint_path)  # Remove checkpoint after successful processing
-            print("Checkpoint file removed.")
-        else:
-            print("No checkpoint file found to remove.")
     except Exception as e:
         print(f"An error occurred during video processing: {str(e)}")
 
 def get_space_creation_date(space_url, cookie_path):
     try:
         command = f'twspace-dl -c "{cookie_path}" -i "{space_url}" --print-json'
-        result = subprocess.run(command, shell=True, capture_output=True, text=True)
-        if result.returncode != 0:
-            raise subprocess.CalledProcessError(result.returncode, command)
+        result = subprocess.run(command, shell=True, capture_output=True, text=True, check=True)
         space_info = json.loads(result.stdout)
         created_at = space_info.get('created_at')
         if created_at:
             return datetime.strptime(created_at, "%Y-%m-%dT%H:%M:%S.%fZ").strftime("%Y-%m-%d")
     except subprocess.CalledProcessError:
-        print("Error: twspace-dl not found or failed. Using current date.")
-    except json.JSONDecodeError:
-        print("Error: Failed to parse twspace-dl output. Using current date.")
+        print("Error: twspace-dl not found or failed. Trying to extract date from filename.")
+        space_id = space_url.split('/')[-1]
+        existing_file = check_tmp_for_existing_files(space_id)
+        if existing_file:
+            file_name = os.path.basename(existing_file)
+            date_match = re.search(r'(\d{4}-\d{2}-\d{2})', file_name)
+            if date_match:
+                return date_match.group(1)
     except Exception as e:
         print(f"Error getting space creation date: {e}")
     return datetime.now().strftime("%Y-%m-%d")  # Fallback to current date if extraction fails
@@ -274,25 +272,21 @@ def main():
         space_url = args.space
         space_id = space_url.split('/')[-1]
         
-        # Get the creation date from the space URL
         creation_date = get_space_creation_date(space_url, user_input['cookie_path'])
         
-        base_name = f"{creation_date}-X-Space-#{space_id}"
-        output_path = get_unique_output_path(args.output, base_name, ".m4a")
+        output_path = get_unique_output_path(args.output, f"{creation_date}-X-Space-#{space_id}", ".m4a")
         
         print(f"Downloading X Space from: {space_url}")
         try:
             download_space(space_url, output_path, user_input['cookie_path'], args.debug)
             print("Download complete. Processing video...")
-            processed_output_path = get_unique_output_path(args.output, base_name, "_processed.mp4")
+            processed_output_path = get_unique_output_path(args.output, f"{creation_date}-X-Space-#{space_id}", "_processed.mp4")
             process_video(output_path, processed_output_path, args.debug)
             
             print(f"Original audio file saved to: {os.path.abspath(output_path)}")
             print(f"Processed video file saved to: {os.path.abspath(processed_output_path)}")
         except subprocess.CalledProcessError as e:
             print(f"Error occurred during download: {e}")
-        except Exception as e:
-            print(f"An unexpected error occurred: {e}")
     else:
         print("Please provide a direct space link using the -s option.")
 
