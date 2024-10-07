@@ -10,6 +10,9 @@
 - Automatic fallback to yt-dlp if twspace-dl fails
 - Error handling for unsupported space types
 - Debug mode for verbose output
+- Temporary file handling for secure and clean operation
+- Unique filename generation to avoid overwriting existing files
+- API functionality for TVR-style recording
 
 ## Prerequisites
 
@@ -100,7 +103,7 @@ Make sure to keep this file secure and do not share it, as it contains your logi
 Run the script with the following command:
 
 ```
-python 𝕏_recorder.py -c /path/to/cookie/file -s SPACE_LINK [-o OUTPUT_DIR] [-d]
+python x_recorder.py -c /path/to/cookie/file -s SPACE_LINK [-o OUTPUT_DIR] [-d]
 ```
 
 - `-c` or `--cookie`: Required. Specify the full path to the 𝕏 (Twitter) cookie file in Netscape format.
@@ -112,24 +115,49 @@ python 𝕏_recorder.py -c /path/to/cookie/file -s SPACE_LINK [-o OUTPUT_DIR] [-
 
 1. Download a specific space:
    ```
-   python 𝕏_recorder.py -c /path/to/cookie/file -s https://twitter.com/i/spaces/1RDGlyLmRPrJL
+   python x_recorder.py -c /path/to/cookie/file -s https://twitter.com/i/spaces/1RDGlyLmRPrJL
    ```
 
 2. Download a space with debug output:
    ```
-   python 𝕏_recorder.py -c /path/to/cookie/file -s https://twitter.com/i/spaces/1RDGlyLmRPrJL -d
+   python x_recorder.py -c /path/to/cookie/file -s https://twitter.com/i/spaces/1RDGlyLmRPrJL -d
    ```
 
 3. Download a space to a specific output directory:
    ```
-   python 𝕏_recorder.py -c /path/to/cookie/file -s https://twitter.com/i/spaces/1RDGlyLmRPrJL -o /path/to/custom/output
+   python x_recorder.py -c /path/to/cookie/file -s https://twitter.com/i/spaces/1RDGlyLmRPrJL -o /path/to/custom/output
    ```
+
+## API Functionality and TVR-style Recording
+
+𝕏-Recorder also includes API functionality that allows you to use it in a TVR (TV Guide Recording) style. With this feature, you can specify your favorite 𝕏 profiles, and the script will periodically scan those profiles for any recorded 𝕏 Spaces. If new recordings are found, they will be automatically marked for download.
+
+To use the API functionality for TVR-style recording, follow these steps:
+
+1. Obtain your 𝕏 API access token. You'll need to create a developer account and an application on the 𝕏 Developer Platform.
+
+2. Run the script with the following command:
+   ```
+   python x_recorder.py -c /path/to/cookie/file -a YOUR_API_ACCESS_TOKEN -p PROFILE1,PROFILE2,PROFILE3
+   ```
+   - `-a` or `--access-token`: Required for API functionality. Specify your 𝕏 API access token.
+   - `-p` or `--profile`: Required for API functionality. Specify the 𝕏 profile names you want to monitor for new recordings. Separate multiple profiles with commas.
+
+3. The script will periodically check the specified profiles for new 𝕏 Space recordings. When a new recording is found, it will be automatically marked for download.
+
+4. The downloaded recordings will be saved in the specified output directory (default is `~/Downloads/𝕏-Recorder`).
+
+With the API functionality and TVR-style recording, you can easily keep track of your favorite 𝕏 profiles and automatically download any new 𝕏 Space recordings they create.
 
 ## Output
 
 The script will generate two files in the specified output directory:
 1. The original downloaded space file (usually in .m4a format)
 2. A processed video file with corrected aspect ratios (in .mp4 format)
+
+## Temporary Files
+
+𝕏-Recorder uses Python's built-in `tempfile` module to handle temporary files securely. The downloaded space is initially stored in a system-designated temporary directory (usually '/tmp') and then moved to the specified output directory after successful download and processing. This approach ensures that no temporary files are left behind and your system stays clean.
 
 ## Troubleshooting
 
@@ -147,4 +175,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Keywords
 
-X Spaces, Twitter Spaces, audio recording, video recording, podcast archiving, social media content, live audio, live video, space downloader, X API, Twitter API, audio archiver, video archiver, space recorder, aspect ratio correction
+X Spaces, Twitter Spaces, audio recording, video recording, podcast archiving, social media content, live audio, live video, space downloader, X API, Twitter API, audio archiver, video archiver, space recorder, aspect ratio correction, TVR, TV Guide Recording
