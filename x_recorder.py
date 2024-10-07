@@ -16,6 +16,8 @@ import json
 import shutil
 import re
 
+DEFAULT_DOWNLOAD_DIR = '/mnt/e/AV/Capture/X-Recorder/'
+
 # Twitter API endpoint and headers
 api_url = 'https://api.x.com/2/spaces'
 headers = {
@@ -26,8 +28,8 @@ def parse_arguments():
     parser = argparse.ArgumentParser(description="X-Recorder: Record and archive X Spaces")
     parser.add_argument("-t", "--timeframe", type=int, choices=[7, 14, 30, 90, 120], default=7,
                         help="Timeframe in days to search for recordings (default: 7)")
-    parser.add_argument("-o", "--output", type=str, default='/mnt/e/AV/Capture/X-Recorder',
-                        help="Output directory for saving recordings (default: /mnt/e/AV/Capture/X-Recorder)")
+    parser.add_argument("-o", "--output", type=str, default=DEFAULT_DOWNLOAD_DIR,
+                        help=f"Output directory for saving recordings (default: {DEFAULT_DOWNLOAD_DIR})")
     parser.add_argument("-c", "--cookie", type=str, help="Full path to the X cookie file")
     parser.add_argument("-a", "--access-token", type=str, help="X (Twitter) API access token")
     parser.add_argument("-d", "--debug", action="store_true", help="Enable debug mode for verbose output")
@@ -263,24 +265,25 @@ def get_space_creation_date(space_url, cookie_path):
 def main():
     args = parse_arguments()
     
-    if not os.path.exists(args.output):
-        os.makedirs(args.output)
-    
     user_input = get_user_input(args)
     
     if args.space:
         space_url = args.space
         space_id = space_url.split('/')[-1]
         
+        # Create a subfolder for the space
+        space_folder = os.path.join(args.output, space_id)
+        os.makedirs(space_folder, exist_ok=True)
+        
         creation_date = get_space_creation_date(space_url, user_input['cookie_path'])
         
-        output_path = get_unique_output_path(args.output, f"{creation_date}-X-Space-#{space_id}", ".m4a")
+        output_path = get_unique_output_path(space_folder, f"{creation_date}-X-Space-#{space_id}", ".m4a")
         
         print(f"Downloading X Space from: {space_url}")
         try:
             download_space(space_url, output_path, user_input['cookie_path'], args.debug)
             print("Download complete. Processing video...")
-            processed_output_path = get_unique_output_path(args.output, f"{creation_date}-X-Space-#{space_id}", "_processed.mp4")
+            processed_output_path = get_unique_output_path(space_folder, f"{creation_date}-X-Space-#{space_id}", "_processed.mp4")
             process_video(output_path, processed_output_path, args.debug)
             
             print(f"Original audio file saved to: {os.path.abspath(output_path)}")
