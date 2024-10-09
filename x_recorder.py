@@ -67,13 +67,22 @@ def check_tmp_for_existing_files(space_id):
             logging.info(f"  {file}")
     return files[0] if files else None
 
-def save_to_tmp(temp_file_path, output_path):
+def save_to_tmp(temp_file_path, output_path, space_id):
     try:
         if os.path.exists(temp_file_path):
             shutil.copy2(temp_file_path, output_path)
             os.remove(temp_file_path)
         else:
-            raise FileNotFoundError(f"Downloaded file not found at {temp_file_path}")
+            # If the file is not found at the expected location, search for it based on the space ID
+            tmp_dir = '/tmp'
+            files = glob.glob(f'{tmp_dir}/**/*{space_id}*.m4a', recursive=True) + glob.glob(f'{tmp_dir}/**/*{space_id}*.mp4', recursive=True)
+            if files:
+                logging.warning(f"File not found at the expected location. Found file(s) based on space ID: {files}")
+                temp_file_path = files[0]
+                shutil.copy2(temp_file_path, output_path)
+                os.remove(temp_file_path)
+            else:
+                raise FileNotFoundError(f"Downloaded file not found for space ID: {space_id}")
     except FileNotFoundError as e:
         logging.error(f"Error saving file to /tmp: {e}")
         raise
@@ -102,7 +111,7 @@ def download_space(space_url, output_path, cookie_path, debug, tool='auto'):
             if debug:
                 logging.debug(f"Successfully downloaded space to {temp_file_path}")
             
-            save_to_tmp(temp_file_path, output_path)
+            save_to_tmp(temp_file_path, output_path, space_id)  # Pass space_id here
             return False
         except subprocess.CalledProcessError:
             if tool == 'twspace_dl':
@@ -119,7 +128,7 @@ def download_space(space_url, output_path, cookie_path, debug, tool='auto'):
             if debug:
                 logging.debug(f"Successfully downloaded space using yt-dlp to {temp_file_path}")
             
-            save_to_tmp(temp_file_path, output_path)
+            save_to_tmp(temp_file_path, output_path, space_id)  # Pass space_id here
             return True
         except subprocess.CalledProcessError as e:
             logging.error(f'Error downloading space with yt-dlp: {e}')
