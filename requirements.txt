@@ -1,4 +1,9 @@
 requests
 pandas
-twspace-dl
+opencv-python
+numpy
+psutil
 yt-dlp
+twspace_dl
+ffmpeg-python
+python-slugify

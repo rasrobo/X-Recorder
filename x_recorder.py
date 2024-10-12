@@ -299,6 +299,14 @@ def extract_space_title(file_path):
         logging.error(f"Error getting space title: {e}")
     return None
 
+def convert_to_mp3(input_path, output_path):
+    try:
+        command = f'ffmpeg -i "{input_path}" -b:a 192k -map_metadata 0 "{output_path}"'
+        subprocess.run(command, shell=True, check=True)
+        logging.info(f"Successfully converted {input_path} to {output_path}")
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Error converting to MP3: {e}")
+
 def main():
     args = parse_arguments()
     
@@ -339,17 +347,25 @@ def main():
             else:
                 output_title = f"{creation_date}-X-Space-#{space_id}"
             
-            final_output_path = get_unique_output_path(space_folder, output_title, ".m4a")
-            os.rename(temp_output_path, final_output_path)
-            
-            if is_video_space:
+            if not is_video_space:
+                # Convert M4A to MP3 and transfer metadata
+                mp3_output_path = get_unique_output_path(space_folder, output_title, ".mp3")
+                convert_to_mp3(temp_output_path, mp3_output_path)
+                
+                # Delete the source M4A file
+                os.remove(temp_output_path)
+                
+                logging.info(f"MP3 file saved to: {os.path.abspath(mp3_output_path)}")
+            else:
+                # Keep the video file
+                final_output_path = get_unique_output_path(space_folder, output_title, ".m4a")
+                os.rename(temp_output_path, final_output_path)
+                
                 logging.info("Processing video...")
                 processed_output_path = get_unique_output_path(space_folder, output_title, "_processed.mp4")
                 process_video(final_output_path, processed_output_path, args.debug)
-            
-            logging.info(f"Original audio file saved to: {os.path.abspath(final_output_path)}")
-            
-            if is_video_space:
+                
+                logging.info(f"Original audio file saved to: {os.path.abspath(final_output_path)}")
                 logging.info(f"Processed video file saved to: {os.path.abspath(processed_output_path)}")
                 
                 if os.path.exists(processed_output_path):
