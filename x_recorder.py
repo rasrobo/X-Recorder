@@ -16,6 +16,7 @@ import json
 import shutil
 import re
 import logging
+from slugify import slugify
 
 DEFAULT_DOWNLOAD_DIR = '/mnt/e/AV/Capture/X-Recorder/'
 
@@ -310,6 +311,13 @@ def main():
         space_url = args.space
         space_id = space_url.split('/')[-1]
         
+        # Extract date from -o argument if provided
+        specified_date = None
+        if args.output:
+            date_match = re.search(r'(\d{4}-\d{2}-\d{2})', args.output)
+            if date_match:
+                specified_date = date_match.group(1)
+        
         # Create a subfolder for the space
         space_folder = os.path.join(args.output, space_id)
         os.makedirs(space_folder, exist_ok=True)
@@ -321,16 +329,15 @@ def main():
             is_video_space = download_space(space_url, temp_output_path, user_input['cookie_path'], args.debug, args.tool)
             logging.info("Download complete.")
             
-            creation_date = get_space_creation_date(temp_output_path)
+            creation_date = get_space_creation_date(temp_output_path, specified_date)
             space_title = extract_space_title(temp_output_path)
             
             if space_title:
-                output_title = f"{creation_date}-{space_title}-X-Space-#{space_id}"
+                # Use slugify to convert the space title to a valid filename
+                slugified_title = slugify(space_title, max_length=200)
+                output_title = f"{creation_date}-{slugified_title}-X-Space-#{space_id}"
             else:
                 output_title = f"{creation_date}-X-Space-#{space_id}"
-            
-            if args.output:
-                output_title = f"{args.output}-{output_title}"
             
             final_output_path = get_unique_output_path(space_folder, output_title, ".m4a")
             os.rename(temp_output_path, final_output_path)
