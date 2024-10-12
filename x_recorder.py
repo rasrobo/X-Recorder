@@ -282,6 +282,22 @@ def get_space_creation_date(file_path, specified_date=None):
     logging.warning("Using current date as fallback.")
     return datetime.now().strftime("%Y-%m-%d")
 
+def extract_space_title(file_path):
+    try:
+        command = f'ffprobe -v quiet -print_format json -show_entries format_tags=title -i "{file_path}"'
+        result = subprocess.run(command, shell=True, capture_output=True, text=True, check=True)
+        metadata = json.loads(result.stdout)
+        title = metadata.get('format', {}).get('tags', {}).get('title')
+        if title:
+            return title
+    except subprocess.CalledProcessError:
+        logging.error("Error: ffprobe failed to extract title.")
+    except json.JSONDecodeError:
+        logging.error("Error: Failed to parse ffprobe output.")
+    except Exception as e:
+        logging.error(f"Error getting space title: {e}")
+    return None
+
 def main():
     args = parse_arguments()
     
@@ -294,13 +310,6 @@ def main():
         space_url = args.space
         space_id = space_url.split('/')[-1]
         
-        # Extract date from -o argument if provided
-        specified_date = None
-        if args.output:
-            date_match = re.search(r'(\d{4}-\d{2}-\d{2})', args.output)
-            if date_match:
-                specified_date = date_match.group(1)
-        
         # Create a subfolder for the space
         space_folder = os.path.join(args.output, space_id)
         os.makedirs(space_folder, exist_ok=True)
@@ -312,14 +321,23 @@ def main():
             is_video_space = download_space(space_url, temp_output_path, user_input['cookie_path'], args.debug, args.tool)
             logging.info("Download complete.")
             
-            creation_date = get_space_creation_date(temp_output_path, specified_date)
+            creation_date = get_space_creation_date(temp_output_path)
+            space_title = extract_space_title(temp_output_path)
             
-            final_output_path = get_unique_output_path(space_folder, f"{creation_date}-X-Space-#{space_id}", ".m4a")
+            if space_title:
+                output_title = f"{creation_date}-{space_title}-X-Space-#{space_id}"
+            else:
+                output_title = f"{creation_date}-X-Space-#{space_id}"
+            
+            if args.output:
+                output_title = f"{args.output}-{output_title}"
+            
+            final_output_path = get_unique_output_path(space_folder, output_title, ".m4a")
             os.rename(temp_output_path, final_output_path)
             
             if is_video_space:
                 logging.info("Processing video...")
-                processed_output_path = get_unique_output_path(space_folder, f"{creation_date}-X-Space-#{space_id}", "_processed.mp4")
+                processed_output_path = get_unique_output_path(space_folder, output_title, "_processed.mp4")
                 process_video(final_output_path, processed_output_path, args.debug)
             
             logging.info(f"Original audio file saved to: {os.path.abspath(final_output_path)}")
