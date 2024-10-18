@@ -1,25 +1,16 @@
 import argparse
-import requests
-import pandas as pd
-from datetime import datetime, timedelta
 import subprocess
 import os
-import cv2
-import numpy as np
-import tempfile
-import psutil
-import time
 import glob
-import hashlib
-import pickle
 import json
 import shutil
 import re
 import logging
 from slugify import slugify
+from datetime import datetime
 
 DEFAULT_DOWNLOAD_DIR = '/mnt/e/AV/Capture/X-Recorder/'
-
+TEMP_DIR = os.path.expanduser("~/Downloads")
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -60,13 +51,13 @@ def get_unique_output_path(base_path, base_name, ext):
     return output_path
 
 def check_tmp_for_existing_files(space_id):
-    tmp_dir = '/tmp'
-    files = glob.glob(f'{tmp_dir}/**/*{space_id}*.m4a', recursive=True) + glob.glob(f'{tmp_dir}/**/*{space_id}*.mp4', recursive=True)
+    files = glob.glob(f'{TEMP_DIR}/*{space_id}*.*')
     if files:
         logging.info(f"Found existing file(s) for space ID {space_id}:")
         for file in files:
             logging.info(f"  {file}")
-    return files[0] if files else None
+        return files[0]
+    return None
 
 def save_to_tmp(temp_file_path, output_path, space_id):
     try:
@@ -74,9 +65,7 @@ def save_to_tmp(temp_file_path, output_path, space_id):
             shutil.copy2(temp_file_path, output_path)
             os.remove(temp_file_path)
         else:
-            # If the file is not found at the expected location, search for it based on the space ID
-            tmp_dir = '/tmp'
-            files = glob.glob(f'{tmp_dir}/**/*{space_id}*.m4a', recursive=True) + glob.glob(f'{tmp_dir}/**/*{space_id}*.mp4', recursive=True)
+            files = glob.glob(f'{TEMP_DIR}/*{space_id}*.*')
             if files:
                 logging.warning(f"File not found at the expected location. Found file(s) based on space ID: {files}")
                 temp_file_path = files[0]
@@ -85,7 +74,10 @@ def save_to_tmp(temp_file_path, output_path, space_id):
             else:
                 raise FileNotFoundError(f"Downloaded file not found for space ID: {space_id}")
     except FileNotFoundError as e:
-        logging.error(f"Error saving file to /tmp: {e}")
+        logging.error(f"Error saving file from {TEMP_DIR}: {e}")
+        raise
+    except Exception as e:
+        logging.error(f"Unexpected error saving file from {TEMP_DIR}: {e}")
         raise
 
 def download_space(space_url, output_path, cookie_path, debug, tool='auto'):
@@ -93,170 +85,68 @@ def download_space(space_url, output_path, cookie_path, debug, tool='auto'):
     existing_file = check_tmp_for_existing_files(space_id)
 
     if existing_file:
-        logging.info(f"Found previously downloaded video at {existing_file}, using it for processing.")
-        shutil.copy2(existing_file, output_path)
-        return False
-
-    logging.info(f"Video not found in /tmp, initiating download...")
-
-    temp_file_path = f'/tmp/X-Space-{space_id}_temp.m4a'
-
-    if tool == 'auto' or tool == 'twspace_dl':
+        logging.info(f"Found previously downloaded file at {existing_file}, using it for processing.")
         try:
-            command = f'twspace_dl -c "{cookie_path}" -i "{space_url}" -o "{temp_file_path}"'
-            if debug:
-                logging.debug(f"Running command: {command}")
-            
-            subprocess.run(command, shell=True, check=True)
-            
-            if debug:
-                logging.debug(f"Successfully downloaded space to {temp_file_path}")
-            
-            save_to_tmp(temp_file_path, output_path, space_id)  # Pass space_id here
+            shutil.copy2(existing_file, output_path)
+            logging.info(f"Successfully copied existing file to {output_path}")
             return False
-        except subprocess.CalledProcessError:
-            if tool == 'twspace_dl':
-                logging.error(f'Error downloading space with twspace_dl')
-                raise
-            logging.warning("twspace_dl failed. Falling back to yt-dlp.")
+        except IOError as e:
+            logging.error(f"Error copying existing file: {e}")
+            return False
 
-    if tool == 'auto' or tool == 'yt-dlp':
-        try:
-            command = f'yt-dlp "{space_url}" --cookies "{cookie_path}" -o "{temp_file_path}"'
-            if debug:
-                logging.debug(f"Running command: {command}")
-            subprocess.run(command, shell=True, check=True)
-            if debug:
-                logging.debug(f"Successfully downloaded space using yt-dlp to {temp_file_path}")
-            
-            save_to_tmp(temp_file_path, output_path, space_id)  # Pass space_id here
-            return True
-        except subprocess.CalledProcessError as e:
-            logging.error(f'Error downloading space with yt-dlp: {e}')
-            raise
+    logging.info(f"No existing file found in {TEMP_DIR}, initiating download...")
 
-def monitor_resources():
-    cpu_usage = psutil.cpu_percent()
-    mem_usage = psutil.virtual_memory().percent
-    return cpu_usage, mem_usage
+    temp_file_path = f'{TEMP_DIR}/X-Space-{space_id}_temp.m4a'
 
-def detect_aspect_ratio_changes(video_path, threshold=0.1):
-    cap = cv2.VideoCapture(video_path)
-    aspect_ratios = []
-    frame_count = 0
-    prev_ratio = None
-    orientation_change_count = 0
-
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            break
-        frame_count += 1
-        height, width = frame.shape[:2]
-        aspect_ratio = width / height
-        
-        if prev_ratio is None:
-            prev_ratio = aspect_ratio
-            aspect_ratios.append((frame_count, aspect_ratio))
-        elif abs(aspect_ratio - prev_ratio) > threshold:
-            if (prev_ratio < 1 and aspect_ratio > 1) or (prev_ratio > 1 and aspect_ratio < 1):
-                orientation_change_count += 1
-                aspect_ratios.append((frame_count, aspect_ratio))
-                prev_ratio = aspect_ratio
-            elif abs(aspect_ratio - prev_ratio) > threshold * 2:
-                aspect_ratios.append((frame_count, aspect_ratio))
-                prev_ratio = aspect_ratio
-
-    cap.release()
-    logging.info(f"Detected {orientation_change_count} orientation changes")
-    return aspect_ratios
-
-def split_video_segment(input_path, start_frame, end_frame, aspect_ratio):
-    cap = cv2.VideoCapture(input_path)
-    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-    
-    segment_frames = []
-    for _ in range(end_frame - start_frame):
-        ret, frame = cap.read()
-        if not ret:
-            break
-        segment_frames.append(frame)
-    
-    cap.release()
-    return (segment_frames, aspect_ratio)
-
-def recombine_segments(segments, output_path, debug):
-    if not segments:
-        logging.warning("No segments to recombine.")
-        return
-
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = None
-
-    for i, (segment_frames, aspect_ratio) in enumerate(segments):
-        if not segment_frames:
-            logging.warning(f"Skipping empty segment {i}")
-            continue
-        height, width = segment_frames[0].shape[:2]
-        if out is None or out.get(cv2.CAP_PROP_FRAME_WIDTH) != width or out.get(cv2.CAP_PROP_FRAME_HEIGHT) != height:
-            if out is not None:
-                out.release()
-            out = cv2.VideoWriter(output_path, fourcc, 30.0, (width, height))
-            if debug:
-                logging.debug(f"Created new VideoWriter for segment {i} with dimensions {width}x{height}")
-        
-        for frame in segment_frames:
-            out.write(frame)
-        
-        if debug:
-            logging.debug(f"Processed segment {i} with {len(segment_frames)} frames")
-
-    if out is not None:
-        out.release()
-        logging.info(f"Video saved to {output_path}")
-    else:
-        logging.error("Error: No video was written")
-
-def save_checkpoint(segments, output_path):
-    checkpoint_path = f"{os.path.splitext(output_path)[0]}_checkpoint.pkl"
-    with open(checkpoint_path, 'wb') as f:
-        pickle.dump(segments, f)
-
-def load_checkpoint(output_path):
-    checkpoint_path = f"{os.path.splitext(output_path)[0]}_checkpoint.pkl"
-    if os.path.exists(checkpoint_path):
-        with open(checkpoint_path, 'rb') as f:
-            return pickle.load(f)
-    return None
-
-def process_video(input_path, output_path, debug):
-    if not os.path.exists(input_path):
-        logging.error(f"Error: Input file not found: {input_path}")
-        return
-
+    download_successful = False
     try:
-        logging.info("Detecting aspect ratio changes...")
-        aspect_ratios = detect_aspect_ratio_changes(input_path)
-        logging.info(f"Detected {len(aspect_ratios)} aspect ratio changes")
+        if tool == 'auto' or tool == 'twspace_dl':
+            try:
+                command = f'twspace_dl -c "{cookie_path}" -i "{space_url}" -o "{temp_file_path}"'
+                if debug:
+                    logging.debug(f"Running command: {command}")
+                
+                subprocess.run(command, shell=True, check=True)
+                
+                if debug:
+                    logging.debug(f"Successfully downloaded space to {temp_file_path}")
+                
+                download_successful = True
+            except subprocess.CalledProcessError:
+                if tool == 'twspace_dl':
+                    logging.error(f'Error downloading space with twspace_dl')
+                    raise
+                logging.warning("twspace_dl failed. Falling back to yt-dlp.")
 
-        if len(aspect_ratios) == 1:
-            logging.info("Only one aspect ratio detected. Copying the entire video.")
-            shutil.copy2(input_path, output_path)
-            logging.info(f"Video copied to {output_path}")
+        if (tool == 'auto' and not download_successful) or tool == 'yt-dlp':
+            try:
+                command = f'yt-dlp "{space_url}" --cookies "{cookie_path}" -o "{temp_file_path}"'
+                if debug:
+                    logging.debug(f"Running command: {command}")
+                subprocess.run(command, shell=True, check=True)
+                if debug:
+                    logging.debug(f"Successfully downloaded space using yt-dlp to {temp_file_path}")
+                
+                download_successful = True
+            except subprocess.CalledProcessError as e:
+                logging.error(f'Error downloading space with yt-dlp: {e}')
+                raise
+
+        if download_successful:
+            try:
+                save_to_tmp(temp_file_path, output_path, space_id)
+                return True
+            except Exception as e:
+                logging.error(f"Error saving downloaded file: {e}")
+                return False
         else:
-            logging.info("Splitting video into segments...")
-            segments = []
-            for i, (start, end) in enumerate(zip(aspect_ratios[:-1], aspect_ratios[1:])):
-                segment = split_video_segment(input_path, start[0], end[0], start[1])
-                segments.append(segment)
-                logging.info(f"Processed segment {i+1}/{len(aspect_ratios)-1}")
-
-            logging.info("Recombining segments...")
-            recombine_segments(segments, output_path, debug)
-
-        logging.info("Video processing complete!")
-    except Exception as e:
-        logging.error(f"An error occurred during video processing: {str(e)}")
+            logging.error("Download failed with all available methods.")
+            return False
+    except KeyboardInterrupt:
+        logging.warning("Download interrupted by user.")
+        if os.path.exists(temp_file_path):
+            os.remove(temp_file_path)
+        raise
 
 def get_space_creation_date(file_path, specified_date=None):
     try:
@@ -266,14 +156,15 @@ def get_space_creation_date(file_path, specified_date=None):
         created_at = metadata.get('format', {}).get('tags', {}).get('creation_time')
         if created_at:
             return datetime.strptime(created_at, "%Y-%m-%dT%H:%M:%S.%fZ").strftime("%Y-%m-%d")
-    except subprocess.CalledProcessError:
-        logging.error("Error: ffprobe failed to extract creation date.")
-    except json.JSONDecodeError:
-        logging.error("Error: Failed to parse ffprobe output.")
+        else:
+            logging.warning(f"No creation_time found in metadata: {metadata}")
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Error running ffprobe: {e}")
+    except json.JSONDecodeError as e:
+        logging.error(f"Error parsing ffprobe output: {e}")
     except Exception as e:
         logging.error(f"Error getting space creation date: {e}")
     
-    # If metadata extraction failed or date wasn't found, use specified date or current date
     if specified_date:
         try:
             return datetime.strptime(specified_date, "%Y-%m-%d").strftime("%Y-%m-%d")
@@ -307,6 +198,19 @@ def convert_to_mp3(input_path, output_path):
     except subprocess.CalledProcessError as e:
         logging.error(f"Error converting to MP3: {e}")
 
+def cleanup_temp_files():
+    pattern = 'X-Space-*'
+    try:
+        files = glob.glob(os.path.join(TEMP_DIR, pattern))
+        for file in files:
+            try:
+                os.remove(file)
+                logging.info(f"Removed temporary file: {file}")
+            except Exception as e:
+                logging.warning(f"Failed to remove temporary file {file}: {e}")
+    except Exception as e:
+        logging.error(f"Error during cleanup: {e}")
+
 def main():
     args = parse_arguments()
     
@@ -337,47 +241,58 @@ def main():
             is_video_space = download_space(space_url, temp_output_path, user_input['cookie_path'], args.debug, args.tool)
             logging.info("Download complete.")
             
-            creation_date = get_space_creation_date(temp_output_path, specified_date)
-            space_title = extract_space_title(temp_output_path)
-            
-            if space_title:
-                # Use slugify to convert the space title to a valid filename
-                slugified_title = slugify(space_title, max_length=200)
-                output_title = f"{creation_date}-{slugified_title}-X-Space-#{space_id}"
-            else:
-                output_title = f"{creation_date}-X-Space-#{space_id}"
-            
-            if not is_video_space:
-                # Convert M4A to MP3 and transfer metadata
-                mp3_output_path = get_unique_output_path(space_folder, output_title, ".mp3")
-                convert_to_mp3(temp_output_path, mp3_output_path)
+            if os.path.exists(temp_output_path):
+                creation_date = get_space_creation_date(temp_output_path, specified_date)
+                space_title = extract_space_title(temp_output_path)
                 
-                # Delete the source M4A file
-                os.remove(temp_output_path)
+                if space_title:
+                    slugified_title = slugify(space_title)
+                    output_title = f"{creation_date}-{slugified_title}-X-Space-#{space_id}"
+                else:
+                    output_title = f"{creation_date}-X-Space-#{space_id}"
                 
-                logging.info(f"MP3 file saved to: {os.path.abspath(mp3_output_path)}")
-            else:
-                # Keep the video file
                 final_output_path = get_unique_output_path(space_folder, output_title, ".m4a")
-                os.rename(temp_output_path, final_output_path)
                 
-                logging.info("Processing video...")
-                processed_output_path = get_unique_output_path(space_folder, output_title, "_processed.mp4")
-                process_video(final_output_path, processed_output_path, args.debug)
+                try:
+                    shutil.copy2(temp_output_path, final_output_path)
+                    os.remove(temp_output_path)
+                    logging.info(f"Successfully moved downloaded file to {final_output_path}")
+                except IOError as e:
+                    logging.error(f"Error moving file to final location: {e}")
+                    try:
+                        with open(temp_output_path, 'rb') as fsrc, open(final_output_path, 'wb') as fdst:
+                            shutil.copyfileobj(fsrc, fdst)
+                        os.remove(temp_output_path)
+                        logging.info(f"Successfully copied file to final location with alternative method")
+                    except IOError as e:
+                        logging.error(f"Error copying file to final location with alternative method: {e}")
+                        logging.info(f"File remains at temporary location: {temp_output_path}")
+                        final_output_path = temp_output_path
                 
                 logging.info(f"Original audio file saved to: {os.path.abspath(final_output_path)}")
-                logging.info(f"Processed video file saved to: {os.path.abspath(processed_output_path)}")
                 
-                if os.path.exists(processed_output_path):
-                    logging.info(f"Processed video file successfully created: {processed_output_path}")
-                else:
-                    logging.error(f"Error: Processed video file not found at {processed_output_path}")
+                # Convert M4A to MP3 and transfer metadata
+                mp3_output_path = get_unique_output_path(space_folder, output_title, ".mp3")
+                convert_to_mp3(final_output_path, mp3_output_path)
+                
+                # Delete the source M4A file
+                os.remove(final_output_path)
+                
+                logging.info(f"MP3 file saved to: {os.path.abspath(mp3_output_path)}")
+                
+                # Cleanup only after successful download and conversion
+                cleanup_temp_files()
+                logging.info("Temporary files cleaned up.")
+            else:
+                logging.error(f"Downloaded file not found at expected location: {temp_output_path}")
         except subprocess.CalledProcessError as e:
             logging.error(f"Error occurred during download: {e}")
         except Exception as e:
             logging.error(f"An unexpected error occurred: {e}")
     else:
         logging.error("Please provide a direct space link using the -s option.")
+
+    logging.info(f"Temporary files will be stored in: {TEMP_DIR}")
 
 if __name__ == "__main__":
     main()
