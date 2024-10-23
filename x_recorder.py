@@ -11,8 +11,6 @@ from datetime import datetime
 
 DEFAULT_DOWNLOAD_DIR = '/mnt/e/AV/Capture/X-Recorder/'
 TEMP_DIR = os.path.expanduser("~/Downloads")
-
-# Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def parse_arguments():
@@ -42,10 +40,33 @@ def get_unique_output_path(base_path, base_name, ext):
 def check_tmp_for_existing_files(space_id):
     files = glob.glob(f'{TEMP_DIR}/*{space_id}*.*')
     if files:
-        logging.info(f"Found existing file(s) for space ID {space_id}:")
-        for file in files:
-            logging.info(f"  {file}")
-        return files[0]
+        # Filter out .part files and handle duplicate extensions
+        complete_files = [f for f in files if not f.endswith('.part')]
+        if complete_files:
+            # Sort files to prioritize files without duplicate extensions
+            complete_files.sort(key=lambda x: len(x.split('.')))
+            selected_file = complete_files[0]
+            
+            # Handle duplicate .m4a extension
+            if selected_file.endswith('.m4a.m4a'):
+                new_name = selected_file[:-4]  # Remove one .m4a
+                try:
+                    os.rename(selected_file, new_name)
+                    selected_file = new_name
+                    logging.info(f"Renamed file with duplicate extension to: {new_name}")
+                except OSError as e:
+                    logging.warning(f"Could not rename file: {e}")
+            
+            logging.info(f"Found existing complete file: {selected_file}")
+            return selected_file
+        else:
+            # Clean up partial downloads
+            for partial_file in files:
+                try:
+                    os.remove(partial_file)
+                    logging.info(f"Removed incomplete download: {partial_file}")
+                except Exception as e:
+                    logging.warning(f"Failed to remove incomplete download {partial_file}: {e}")
     return None
 
 def download_space(space_url, cookie_path, debug):
@@ -66,52 +87,91 @@ def download_space(space_url, cookie_path, debug):
             logging.debug(f"Running command: {command}")
         subprocess.run(command, shell=True, check=True)
         
-        if debug:
-            logging.debug(f"Successfully downloaded space using yt-dlp to {temp_file_path}")
+        # Check for the file with possible extensions
+        for possible_path in [temp_file_path, f"{temp_file_path}.m4a"]:
+            if os.path.exists(possible_path) and not possible_path.endswith('.part'):
+                if possible_path != temp_file_path:
+                    os.rename(possible_path, temp_file_path)
+                logging.info(f"Successfully downloaded space to {temp_file_path}")
+                return temp_file_path, True
         
-        return temp_file_path, True
+        logging.error("Download completed but file not found at expected location")
+        return None, False
+            
     except subprocess.CalledProcessError as e:
         logging.error(f'Error downloading space with yt-dlp: {e}')
         raise
     except KeyboardInterrupt:
         logging.warning("Download interrupted by user.")
-        if os.path.exists(temp_file_path):
-            os.remove(temp_file_path)
+        # Don't remove the file on interrupt
         raise
 
 def extract_metadata(file_path):
     try:
-        command = f'ffprobe -v quiet -print_format json -show_entries format_tags=creation_time:title -i "{file_path}"'
+        # First try to extract metadata using ffprobe
+        command = f'ffprobe -v quiet -print_format json -show_entries format_tags -i "{file_path}"'
         result = subprocess.run(command, shell=True, capture_output=True, text=True, check=True)
         metadata = json.loads(result.stdout)
         
-        if metadata:
-            logging.debug(f"Extracted metadata for file {file_path}: {json.dumps(metadata, indent=2)}")
-        else:
-            logging.warning(f"No metadata found for file {file_path}")
+        if not metadata or not metadata.get('format', {}).get('tags'):
+            # If no metadata found, try extracting to a temporary file
+            temp_metadata_file = os.path.join(TEMP_DIR, f"metadata_{os.path.basename(file_path)}.txt")
+            extract_cmd = f'ffmpeg -i "{file_path}" -f ffmetadata "{temp_metadata_file}"'
+            subprocess.run(extract_cmd, shell=True, check=True)
+            
+            # Read the metadata file
+            with open(temp_metadata_file, 'r') as f:
+                metadata_text = f.read()
+            
+            # Clean up
+            os.remove(temp_metadata_file)
+            
+            # Convert the metadata text to a dictionary
+            metadata = {'format': {'tags': {}}}
+            for line in metadata_text.splitlines():
+                if '=' in line:
+                    key, value = line.split('=', 1)
+                    metadata['format']['tags'][key.strip()] = value.strip()
         
-        return metadata if metadata else {}
+        return metadata
     except subprocess.CalledProcessError:
-        logging.error("Error: ffprobe failed to extract metadata.")
+        logging.error("Error: ffprobe/ffmpeg failed to extract metadata.")
     except json.JSONDecodeError:
         logging.error("Error: Failed to parse ffprobe output.")
     except Exception as e:
-        logging.error(f"Error extracting metadata: {str(e)}")
-    return {}
+        logging.error(f"Error extracting metadata: {e}")
+    return {'format': {'tags': {}}}
 
 def add_metadata_to_m4a(file_path, title=None, date=None):
     try:
-        logging.debug(f"Preparing to add metadata to file {file_path}: title={str(title)}, date={str(date)}")
-
-        command = ['ffmpeg', '-i', file_path, '-c', 'copy', '-metadata', f'title={str(title)}', '-metadata', f'date={str(date)}', f'{file_path}.tmp']
-        subprocess.run(command, check=True)
-
-        if os.path.exists(f"{file_path}.tmp"):
-            os.replace(f"{file_path}.tmp", file_path)
-
-        logging.info(f"Metadata added to {file_path}: title={str(title)}, date={str(date)}")
+        temp_output = f"{os.path.splitext(file_path)[0]}_temp.m4a"
+        command = [
+            'ffmpeg',
+            '-i', file_path,
+            '-c', 'copy',
+            '-metadata', f'title={title if title else ""}',
+            '-metadata', f'date={date if date else ""}',
+            temp_output
+        ]
+        
+        if os.path.exists(temp_output):
+            os.remove(temp_output)
+            
+        subprocess.run(command, check=True, capture_output=True, text=True)
+        
+        # Only replace the original file if the temporary file was created successfully
+        if os.path.exists(temp_output):
+            os.replace(temp_output, file_path)
+            logging.info(f"Metadata added to {file_path}: title={title}, date={date}")
+        else:
+            logging.error("Failed to create temporary file for metadata addition")
+            
     except subprocess.CalledProcessError as e:
-        logging.error(f"Error adding metadata with ffmpeg: {str(e)}")
+        logging.error(f"Error adding metadata with ffmpeg: {e}")
+        if e.stderr:
+            logging.error(f"FFmpeg error output: {e.stderr}")
+    except Exception as e:
+        logging.error(f"Error adding metadata: {str(e)}")
 
 def get_space_creation_date(file_path, specified_date=None):
     metadata = extract_metadata(file_path)
@@ -155,10 +215,8 @@ def convert_to_mp3(input_path, output_path):
         command = f'ffmpeg -i "{input_path}" -b:a 192k -map_metadata 0 "{output_path}"'
         subprocess.run(command, shell=True, check=True)
         logging.info(f"Successfully converted {input_path} to {output_path}")
-        return True
     except subprocess.CalledProcessError as e:
         logging.error(f"Error converting to MP3: {e}")
-        return False
 
 def cleanup_temp_files():
     pattern = 'X-Space-*'
@@ -177,6 +235,7 @@ def main():
     logging.info(f"Temporary files will be stored in: {TEMP_DIR}")
     
     args = parse_arguments()
+    success = False
     
     if args.debug:
         logging.getLogger().setLevel(logging.DEBUG)
@@ -187,18 +246,39 @@ def main():
         space_url = args.space
         space_id = space_url.split('/')[-1]
         
-        specified_date = None
-        if args.output:
-            date_match = re.search(r'(\d{4}-\d{2}-\d{2})', args.output)
-            if date_match:
-                specified_date = date_match.group(1)
-        
-        space_folder = os.path.join(args.output, space_id)
-        os.makedirs(space_folder, exist_ok=True)
-        
-        logging.info(f"Downloading X Space from: {space_url}")
-        
         try:
+            # First, get metadata using yt-dlp
+            metadata_command = [
+                'yt-dlp',
+                '--cookies', user_input['cookie_path'],
+                '--dump-json',
+                '--no-download',
+                space_url
+            ]
+            
+            try:
+                metadata_result = subprocess.run(metadata_command, capture_output=True, text=True, check=True)
+                space_info = json.loads(metadata_result.stdout)
+                space_title = space_info.get('title', '')
+                space_date = space_info.get('upload_date', '')
+                if args.debug:
+                    logging.debug(f"Space metadata: title='{space_title}', date='{space_date}'")
+            except Exception as e:
+                logging.warning(f"Failed to get space metadata: {e}")
+                space_title = None
+                space_date = None
+            
+            specified_date = None
+            if args.output:
+                date_match = re.search(r'(\d{4}-\d{2}-\d{2})', args.output)
+                if date_match:
+                    specified_date = date_match.group(1)
+            
+            space_folder = os.path.join(args.output, space_id)
+            os.makedirs(space_folder, exist_ok=True)
+            
+            logging.info(f"Downloading X Space from: {space_url}")
+            
             temp_file_path, is_new_download = download_space(space_url, user_input['cookie_path'], args.debug)
             
             if temp_file_path:
@@ -207,16 +287,31 @@ def main():
                 else:
                     logging.info("Using existing file, skipping download.")
                 
-                creation_date = get_space_creation_date(temp_file_path, specified_date)
-                space_title = extract_space_title(temp_file_path)
+                # Use space metadata if available, otherwise fall back to file metadata
+                creation_date = datetime.now().strftime("%Y-%m-%d")
+                if space_date:
+                    try:
+                        creation_date = datetime.strptime(space_date, "%Y%m%d").strftime("%Y-%m-%d")
+                    except ValueError:
+                        pass
+                
+                # Set the title for metadata
+                title = f"{space_title} - X Space #{space_id}" if space_title else f"X Space #{space_id}"
+                
+                # Add metadata to the M4A file
+                add_metadata_to_m4a(temp_file_path, title=title, date=creation_date)
 
-                # Add extracted metadata back into the M4A file
-                add_metadata_to_m4a(temp_file_path, title=space_title or "Unknown Title", date=creation_date)
-
-                if space_title:
-                    slugified_title = slugify(str(space_title))
-                    output_title = f"{creation_date}-{slugified_title}-X-Space-#{space_id}"
-                else:
+                # Create output filename
+                try:
+                    if space_title:
+                        # Ensure space_title is a string and properly slugified
+                        safe_title = str(space_title)
+                        slugified_title = slugify(safe_title)
+                        output_title = f"{creation_date}-{slugified_title}-X-Space-#{space_id}"
+                    else:
+                        output_title = f"{creation_date}-X-Space-#{space_id}"
+                except Exception as e:
+                    logging.error(f"Error creating output title: {e}")
                     output_title = f"{creation_date}-X-Space-#{space_id}"
                 
                 final_output_path = get_unique_output_path(space_folder, output_title, ".m4a")
@@ -225,29 +320,40 @@ def main():
                     shutil.copy2(temp_file_path, final_output_path)
                     logging.info(f"Successfully copied file to {final_output_path}")
                     
-                    mp3_output_path = get_unique_output_path(space_folder, output_title, ".mp3")
-                    if convert_to_mp3(final_output_path, mp3_output_path):
-                        logging.info(f"MP3 file saved to: {os.path.abspath(mp3_output_path)}")
-
-                    # Remove the temporary file only if the download was new and successful
                     if is_new_download:
                         os.remove(temp_file_path)
                         logging.info(f"Removed temporary file: {temp_file_path}")
                     
                     logging.info(f"Original audio file saved to: {os.path.abspath(final_output_path)}")
-
-                except Exception as e:
-                    logging.error(f"Error copying file to the final output path: {e}")
+                    
+                    # Convert M4A to MP3 and transfer metadata
+                    mp3_output_path = get_unique_output_path(space_folder, output_title, ".mp3")
+                    convert_to_mp3(final_output_path, mp3_output_path)
+                    
+                    logging.info(f"MP3 file saved to: {os.path.abspath(mp3_output_path)}")
+                    
+                    success = True
+                    
+                except IOError as e:
+                    logging.error(f"Error copying file to final location: {e}")
+                    raise
             else:
-                logging.error("No file was downloaded or found for processing.")
-
+                logging.error("Failed to download or locate the space file.")
+                raise Exception("Failed to download or locate the space file.")
+        
+        except subprocess.CalledProcessError as e:
+            logging.error(f"Error occurred during download: {e}")
         except Exception as e:
-            logging.error(f"Failed to download or process the X Space: {e}")
+            logging.error(f"Failed to process the X Space: {str(e)}")
+        finally:
+            if success:
+                cleanup_temp_files()
+                logging.info("Temporary files cleaned up.")
+            else:
+                logging.info("Keeping temporary files for debugging purposes.")
+    
     else:
-        logging.error("No space URL provided. Use the -s or --space flag to specify a Space URL.")
-
-    cleanup_temp_files()
+        logging.error("Please provide a direct space link using the -s option.")
 
 if __name__ == "__main__":
     main()
-
