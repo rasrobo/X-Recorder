@@ -13,6 +13,34 @@ DEFAULT_DOWNLOAD_DIR = '/mnt/e/AV/Capture/X-Recorder/'
 TEMP_DIR = os.path.expanduser("~/Downloads")
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+def verify_download(file_path, expected_duration=None):
+    """Verify the downloaded file is complete and has the expected duration."""
+    try:
+        command = [
+            'ffprobe',
+            '-v', 'quiet',
+            '-print_format', 'json',
+            '-show_format',
+            '-show_streams',
+            file_path
+        ]
+        result = subprocess.run(command, capture_output=True, text=True, check=True)
+        info = json.loads(result.stdout)
+        
+        duration = float(info.get('format', {}).get('duration', 0))
+        if duration < 60:  # Less than a minute
+            logging.warning(f"File duration suspiciously short: {duration} seconds")
+            return False
+            
+        if expected_duration and abs(duration - expected_duration) > 300:  # 5 minute tolerance
+            logging.warning(f"File duration mismatch: got {duration}s, expected {expected_duration}s")
+            return False
+            
+        return True
+    except Exception as e:
+        logging.error(f"Error verifying download: {e}")
+        return False
+
 def parse_arguments():
     parser = argparse.ArgumentParser(description="X-Recorder: Record and archive X Spaces")
     parser.add_argument("-o", "--output", type=str, default=DEFAULT_DOWNLOAD_DIR,
@@ -74,15 +102,62 @@ def download_space(space_url, cookie_path, debug):
     space_id = space_url.split('/')[-1]
     existing_file = check_tmp_for_existing_files(space_id)
 
+    # First get metadata to check expected duration
+    try:
+        metadata_command = [
+            'yt-dlp',
+            '--cookies', cookie_path,
+            '--dump-json',
+            '--no-download',
+            space_url
+        ]
+        metadata_result = subprocess.run(metadata_command, capture_output=True, text=True, check=True)
+        space_info = json.loads(metadata_result.stdout)
+        
+        # Save metadata JSON for debugging
+        metadata_path = f'{TEMP_DIR}/X-Space-{space_id}_metadata.json'
+        with open(metadata_path, 'w', encoding='utf-8') as f:
+            json.dump(space_info, f, indent=2, ensure_ascii=False)
+        
+        # Get expected duration from metadata
+        duration = float(space_info.get('duration', 0))
+        if duration:
+            logging.info(f"Expected space duration: {duration/60:.1f} minutes")
+    except Exception as e:
+        logging.warning(f"Could not get space metadata: {e}")
+        duration = 0
+
     if existing_file and os.path.exists(existing_file) and not existing_file.endswith('.part'):
-        logging.info(f"Found previously downloaded file at {existing_file}, using it for processing.")
-        return existing_file, False
+        # Verify existing file duration
+        try:
+            command = [
+                'ffprobe',
+                '-v', 'quiet',
+                '-print_format', 'json',
+                '-show_format',
+                existing_file
+            ]
+            result = subprocess.run(command, capture_output=True, text=True, check=True)
+            file_info = json.loads(result.stdout)
+            actual_duration = float(file_info.get('format', {}).get('duration', 0))
+            
+            if duration and abs(actual_duration - duration) > 300:  # 5 minute tolerance
+                logging.warning(f"Existing file duration mismatch: got {actual_duration/60:.1f} minutes, "
+                              f"expected {duration/60:.1f} minutes")
+                # Remove incomplete file
+                os.remove(existing_file)
+                logging.info(f"Removed incomplete file: {existing_file}")
+            else:
+                logging.info(f"Found previously downloaded file at {existing_file}, using it for processing.")
+                return existing_file, False
+        except Exception as e:
+            logging.warning(f"Could not verify existing file duration: {e}")
 
     logging.info(f"Initiating download...")
     temp_file_path = f'{TEMP_DIR}/X-Space-{space_id}_temp.m4a'
 
     try:
-        # Download command with resume capability and fragment retries
+        # Download command with essential options
         download_command = [
             'yt-dlp',
             '--cookies', cookie_path,
@@ -91,8 +166,7 @@ def download_space(space_url, cookie_path, debug):
             '--no-part',               # Don't use .part files
             '--fragment-retries', 'infinite',  # Keep retrying failed fragments
             '--retries', 'infinite',          # Keep retrying on errors
-            '--buffer-size', '16K',           # Smaller buffer size for more frequent saves
-            '--hls-use-mpegts',              # Use MPEG-TS format for better compatibility
+            '--extractor-args', 'twitter:max_retries=3',  # Twitter-specific retries
             '-o', temp_file_path,
             space_url
         ]
@@ -103,8 +177,30 @@ def download_space(space_url, cookie_path, debug):
         subprocess.run(download_command, check=True)
         
         if os.path.exists(temp_file_path):
-            logging.info(f"Successfully downloaded space to {temp_file_path}")
-            return temp_file_path, True
+            # Verify downloaded file duration
+            try:
+                command = [
+                    'ffprobe',
+                    '-v', 'quiet',
+                    '-print_format', 'json',
+                    '-show_format',
+                    temp_file_path
+                ]
+                result = subprocess.run(command, capture_output=True, text=True, check=True)
+                file_info = json.loads(result.stdout)
+                actual_duration = float(file_info.get('format', {}).get('duration', 0))
+                
+                if duration and abs(actual_duration - duration) > 300:  # 5 minute tolerance
+                    logging.error(f"Download duration mismatch: got {actual_duration/60:.1f} minutes, "
+                                f"expected {duration/60:.1f} minutes")
+                    return None, False
+                
+                logging.info(f"Successfully downloaded space to {temp_file_path} "
+                           f"(duration: {actual_duration/60:.1f} minutes)")
+                return temp_file_path, True
+            except Exception as e:
+                logging.error(f"Error verifying download duration: {e}")
+                return None, False
         
         logging.error("Download completed but file not found at expected location")
         return None, False
@@ -119,6 +215,41 @@ def download_space(space_url, cookie_path, debug):
     except Exception as e:
         logging.error(f"Unexpected error during download: {str(e)}")
         raise
+
+def verify_space_duration(file_path, expected_duration=None):
+    """Verify the downloaded file duration matches expected length."""
+    try:
+        command = [
+            'ffprobe',
+            '-v', 'quiet',
+            '-print_format', 'json',
+            '-show_format',
+            file_path
+        ]
+        result = subprocess.run(command, capture_output=True, text=True, check=True)
+        info = json.loads(result.stdout)
+        
+        actual_duration = float(info.get('format', {}).get('duration', 0))
+        actual_minutes = actual_duration / 60
+        
+        if expected_duration:
+            expected_minutes = expected_duration / 60
+            if abs(actual_minutes - expected_minutes) > 5:  # 5 minute tolerance
+                logging.warning(f"Duration mismatch: got {actual_minutes:.1f} minutes, "
+                              f"expected {expected_minutes:.1f} minutes")
+                return False
+        
+        logging.info(f"File duration: {actual_minutes:.1f} minutes")
+        
+        # Basic sanity check - file should be longer than 1 minute
+        if actual_minutes < 1:
+            logging.warning("File duration suspiciously short")
+            return False
+            
+        return True
+    except Exception as e:
+        logging.error(f"Error verifying duration: {e}")
+        return False
 
 def extract_metadata(file_path):
     try:
@@ -224,13 +355,30 @@ def extract_space_title(file_path):
     filename = os.path.splitext(os.path.basename(file_path))[0]
     return filename
 
-def convert_to_mp3(input_path, output_path):
+def convert_to_mp3(input_path, output_path, title=None, date=None):
+    """Convert to MP3 and add metadata."""
     try:
-        command = f'ffmpeg -i "{input_path}" -b:a 192k -map_metadata 0 "{output_path}"'
-        subprocess.run(command, shell=True, check=True)
-        logging.info(f"Successfully converted {input_path} to {output_path}")
+        command = [
+            'ffmpeg',
+            '-i', input_path,
+            '-b:a', '192k',
+            '-map_metadata', '0'
+        ]
+        
+        # Add metadata if provided
+        if title:
+            command.extend(['-metadata', f'title={title}'])
+        if date:
+            command.extend(['-metadata', f'date={date}'])
+            
+        command.append(output_path)
+        
+        subprocess.run(command, check=True)
+        logging.info(f"Successfully converted to MP3: {output_path}")
+        return True
     except subprocess.CalledProcessError as e:
         logging.error(f"Error converting to MP3: {e}")
+        return False
 
 def cleanup_temp_files(space_id=None, preserve_metadata=True, had_errors=False):
     """
@@ -277,6 +425,32 @@ def sanitize_filename(title):
         filename = filename[:200]
     return filename
 
+def cleanup_destination_duplicates(space_folder, space_id):
+    """Clean up duplicate files in destination folder, keeping the most informative one."""
+    try:
+        # Get all m4a files for this space
+        files = glob.glob(os.path.join(space_folder, f'*-X-Space-#{space_id}*.m4a'))
+        if len(files) <= 1:
+            return
+
+        # Sort files by name length (longer names typically have more info)
+        # and then by modification time (newer first)
+        files.sort(key=lambda x: (-len(os.path.basename(x)), -os.path.getmtime(x)))
+
+        # Keep the first file (most informative/newest) and remove others
+        keep_file = files[0]
+        for file in files[1:]:
+            try:
+                os.remove(file)
+                logging.info(f"Removed duplicate file: {file}")
+            except Exception as e:
+                logging.warning(f"Failed to remove duplicate file {file}: {e}")
+
+        logging.info(f"Kept most informative file: {keep_file}")
+
+    except Exception as e:
+        logging.error(f"Error cleaning up destination duplicates: {e}")
+
 def main():
     logging.info(f"Temporary files will be stored in: {TEMP_DIR}")
     
@@ -308,16 +482,35 @@ def main():
                 space_info = json.loads(metadata_result.stdout)
                 space_title = str(space_info.get('title', ''))
                 space_date = space_info.get('upload_date', '')
-                # Check if space has video streams
-                is_video_space = any('video' in fmt.get('format', '').lower() 
-                                   for fmt in space_info.get('formats', []))
+                expected_duration = float(space_info.get('duration', 0))
+                
+                # Improved video space detection
+                formats = space_info.get('formats', [])
+                is_video_space = False
+                
+                # Check multiple indicators for video content
+                for fmt in formats:
+                    if any([
+                        fmt.get('vcodec', 'none').lower() not in ['none', 'n/a'],
+                        'video' in fmt.get('format_note', '').lower(),
+                        fmt.get('width', 0) > 0,
+                        fmt.get('height', 0) > 0,
+                        fmt.get('fps', 0) > 0,
+                        fmt.get('acodec', '') == 'none',  # Video-only stream
+                        'video only' in fmt.get('format', '').lower()
+                    ]):
+                        is_video_space = True
+                        break
+                
                 if args.debug:
-                    logging.debug(f"Space metadata: title='{space_title}', date='{space_date}', is_video={is_video_space}")
+                    logging.debug(f"Space metadata: title='{space_title}', date='{space_date}', "
+                                f"is_video={is_video_space}, duration={expected_duration/60:.1f}min")
             except Exception as e:
                 logging.warning(f"Failed to get space metadata: {e}")
                 space_title = None
                 space_date = None
                 is_video_space = False
+                expected_duration = 0
                 had_errors = True
             
             specified_date = None
@@ -335,7 +528,29 @@ def main():
             
             if temp_file_path:
                 if is_new_download:
-                    logging.info("Download complete.")
+                    logging.info("Download complete, verifying...")
+                    # Verify downloaded file duration
+                    try:
+                        probe_cmd = [
+                            'ffprobe',
+                            '-v', 'quiet',
+                            '-print_format', 'json',
+                            '-show_format',
+                            temp_file_path
+                        ]
+                        probe_result = subprocess.run(probe_cmd, capture_output=True, text=True, check=True)
+                        file_info = json.loads(probe_result.stdout)
+                        actual_duration = float(file_info.get('format', {}).get('duration', 0))
+                        
+                        if expected_duration > 0 and abs(actual_duration - expected_duration) > 300:  # 5 min tolerance
+                            logging.warning(f"Duration mismatch: expected {expected_duration/60:.1f}min, "
+                                          f"got {actual_duration/60:.1f}min")
+                            had_errors = True
+                        else:
+                            logging.info(f"File duration verified: {actual_duration/60:.1f}min")
+                    except Exception as e:
+                        logging.error(f"Error verifying file duration: {e}")
+                        had_errors = True
                 else:
                     logging.info("Using existing file, skipping download.")
                 
@@ -351,12 +566,9 @@ def main():
                         creation_date = get_space_creation_date(temp_file_path, specified_date)
 
                     # Create title for metadata and filename
-                    
-                    # In main function, update the title processing section:
                     try:
                         if space_title:
                             title = str(space_title)
-                            # Make filename safe without slugify
                             safe_title = sanitize_filename(title)
                             output_title = f"{creation_date}-{safe_title}-X-Space-#{space_id}"
                         else:
@@ -367,25 +579,29 @@ def main():
                         title = f"X Space #{space_id}"
                         output_title = f"{creation_date}-X-Space-#{space_id}"
                         had_errors = True
-                        
+                    
                     # Add metadata to the M4A file
                     add_metadata_to_m4a(temp_file_path, title=title, date=creation_date)
                     
                     final_output_path = get_unique_output_path(space_folder, output_title, ".m4a")
-                    
+                    mp3_output_path = get_unique_output_path(space_folder, output_title, ".mp3")
                     try:
                         shutil.copy2(temp_file_path, final_output_path)
                         logging.info(f"Successfully copied file to {final_output_path}")
                         logging.info(f"Original audio file saved to: {os.path.abspath(final_output_path)}")
                         
-                        # Convert to MP3 only if it's a video space
+                        # Only convert to MP3 if it's a video space
                         if is_video_space:
                             logging.info("Video space detected, converting to MP3...")
                             mp3_output_path = get_unique_output_path(space_folder, output_title, ".mp3")
                             convert_to_mp3(final_output_path, mp3_output_path)
                             logging.info(f"MP3 file saved to: {os.path.abspath(mp3_output_path)}")
+                            logging.info("Keeping both M4A (video) and MP3 (audio) files")
                         else:
-                            logging.info("Audio-only space detected, skipping MP3 conversion.")
+                            logging.info("Audio-only space detected, keeping original M4A format for better quality")
+                        
+                        # Clean up duplicate files in destination
+                        cleanup_destination_duplicates(space_folder, space_id)
                         
                         success = True and not had_errors
                         
