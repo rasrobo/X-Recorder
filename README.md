@@ -1,77 +1,86 @@
-# 𝕏-Recorder: Ultimate Twitter Spaces Recorder
+# X-Recorder
 
-𝕏-Recorder is a powerful tool for capturing, archiving, and downloading pre-recorded Twitter Spaces (now known as 𝕏 Spaces). It's like a VCR for your favorite audio and video content!
+## Download and Archive X Spaces with Metadata Preservation
 
-## Key Features
+X-Recorder is a powerful command-line tool for capturing, archiving, and downloading X Spaces (formerly Twitter Spaces). Perfect for content creators, researchers, and anyone wanting to maintain a high-quality archive of X Spaces.
 
-- Download missed 𝕏 Spaces using direct links
-- Supports both audio and video spaces
-- Automatic aspect ratio correction for video spaces
-- Smart fallback system (twspace-dl to yt-dlp)
-- Efficient handling of previously downloaded spaces
+### Features
+- High-quality audio downloads
+- Preserves original metadata (title, date)
+- Smart handling of video spaces
+- Consistent file naming and organization
+- Automatic metadata embedding
+- Robust error handling and recovery
 - Debug mode for troubleshooting
 
-## Prerequisites
+### Use Cases
+- Content creators archiving their spaces
+- Researchers collecting data
+- Podcast creators repurposing content
+- Digital archivists
+- Personal collections
 
-- Python 3.6+
-- 𝕏 (Twitter) Cookie File
-- OpenCV library
+## Installation
 
-## Quick Start
-
-1. Clone and set up:
-   ```bash
-   git clone https://github.com/rasrobo/X-Recorder.git
-   cd X-Recorder
-   pip install -r requirements.txt
-   pip install twspace-dl yt-dlp opencv-python
-   ```
-
-2. Run the script:
-   ```bash
-   python x_recorder.py -c /path/to/cookie/file -s SPACE_LINK
-   ```
-
-## Advanced Usage
-
-### Custom Output Directory
-
+1. Clone the repository:
 ```bash
-python x_recorder.py -c /path/to/cookie/file -s SPACE_LINK -o /custom/output/path
+git clone https://github.com/rasrobo/X-Recorder.git
+cd X-Recorder
 ```
 
-### Debug Mode
-
+2. Create a virtual environment:
 ```bash
-python x_recorder.py -c /path/to/cookie/file -s SPACE_LINK -d
+python -m venv x-recorder-env
+source x-recorder-env/bin/activate  # Linux/Mac
+# or
+.\x-recorder-env\Scripts\activate  # Windows
 ```
 
-## Output
+3. Install dependencies:
+```bash
+pip install -r requirements.txt
+```
 
-The script generates two files:
-1. Original downloaded space file (.m4a format)
-2. Processed video file with corrected aspect ratios (.mp4 format)
+## Usage
 
-## Obtaining the 𝕏 (Twitter) Cookie File
+Basic usage:
+```bash
+python x_recorder.py -c /path/to/cookie.txt -s https://x.com/i/spaces/YOUR_SPACE_ID
+```
 
-1. Open your browser and log in to 𝕏 (Twitter).
-2. Open Developer Tools (F12) and go to the Network tab.
-3. Find a request to "twitter.com" or "x.com" and copy the cookie data.
-4. Create a text file with the header:
-   ```
-   # Netscape HTTP Cookie File
-   ```
-5. Add each cookie in this format:
-   ```
-   .twitter.com	TRUE	/	TRUE	1767225600	cookie_name	cookie_value
-   ```
-6. Save as `x_cookies.txt`.
+Options:
+- `-c, --cookie`: Path to X cookie file
+- `-o, --output`: Custom output directory
+- `-d, --debug`: Enable debug logging
+- `-s, --space`: X Space URL to download
+
+## Output Format
+Downloads are organized by space ID:
+```
+output_dir/
+└── space_id/
+    ├── YYYY-MM-DD-space-title-#space_id.m4a
+    └── YYYY-MM-DD-space-title-#space_id.mp3 (for video spaces)
+```
+
+## Requirements
+- Python 3.8+
+- ffmpeg
+- X (Twitter) cookie file
+- Internet connection
+
+## Obtaining the X Cookie File
+
+1. Open your browser and log in to X
+2. Open Developer Tools (F12) and go to the Network tab
+3. Find a request to "twitter.com" or "x.com" and copy the cookie data
+4. Save as a text file
 
 ## Troubleshooting
 
-- For "ModuleNotFoundError": Ensure all dependencies are installed.
-- If download fails: Check cookie file and permissions.
-- Use `-d` flag for verbose debug output.
+- For "ModuleNotFoundError": Ensure all dependencies are installed
+- If download fails: Check cookie file and permissions
+- Use `-d` flag for verbose debug output
 
 ## Donations
 
@@ -79,17 +88,12 @@ If you find this software useful and would like to support its development, you 
 
 [![Buy Me A Coffee](https://cdn.buymeacoffee.com/buttons/default-orange.png)](https://buymeacoffee.com/robodigitalis)
 
-
 ## Contributing
-
-We welcome contributions! Please submit a Pull Request or open an Issue.
+Contributions welcome! Please feel free to submit a Pull Request.
 
 ## License
-
-MIT License - see [LICENSE](LICENSE) for details.
+MIT License
 
 ---
 
-𝕏-Recorder: Your go-to solution for recording and archiving Twitter Spaces. Perfect for podcast enthusiasts, social media managers, and content creators.
-
-Keywords: X Spaces, Twitter Spaces, audio recording, video recording, podcast archiving, social media content, live audio, live video, space downloader, X API, Twitter API, audio archiver, video archiver, space recorder, aspect ratio correction
+Keywords: X Spaces downloader, Twitter Spaces recorder, social media archival tool, X Space archive, Twitter Space download, social media content preservation, X Spaces backup tool, Twitter Spaces archiver, audio recording, space downloader, audio archiver, metadata preservation, space recorder, content archival, podcast archiving, digital preservation, X API, audio archiving tool
