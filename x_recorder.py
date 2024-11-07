@@ -29,6 +29,55 @@ class Config:
     METADATA_EXTENSIONS: tuple = ('.json', '.m3u8', '.info.json', '.ytdl')
     DURATION_TOLERANCE_MINUTES: int = 5
 
+def extract_metadata(file_path):
+    """Extract metadata from media file using ffprobe."""
+    try:
+        command = [
+            'ffprobe',
+            '-v', 'quiet',
+            '-print_format', 'json',
+            '-show_format',
+            '-show_entries', 'format_tags',
+            file_path
+        ]
+        result = subprocess.run(command, capture_output=True, text=True, check=True)
+        metadata = json.loads(result.stdout)
+        
+        if not metadata or not metadata.get('format', {}).get('tags'):
+            # If no metadata found, try extracting to a temporary file
+            temp_metadata_file = os.path.join(TEMP_DIR, f"metadata_{os.path.basename(file_path)}.txt")
+            extract_cmd = [
+                'ffmpeg',
+                '-i', file_path,
+                '-f', 'ffmetadata',
+                temp_metadata_file
+            ]
+            subprocess.run(extract_cmd, capture_output=True, text=True, check=True)
+            
+            # Read the metadata file
+            with open(temp_metadata_file, 'r', encoding='utf-8') as f:
+                metadata_text = f.read()
+                
+            # Clean up
+            os.remove(temp_metadata_file)
+            
+            # Convert the metadata text to a dictionary
+            metadata = {'format': {'tags': {}}}
+            for line in metadata_text.splitlines():
+                if '=' in line:
+                    key, value = line.split('=', 1)
+                    metadata['format']['tags'][key.strip()] = value.strip()
+        
+        return metadata
+    except subprocess.CalledProcessError:
+        logging.error("Error: ffprobe/ffmpeg failed to extract metadata")
+    except json.JSONDecodeError:
+        logging.error("Error: Failed to parse ffprobe output")
+    except Exception as e:
+        logging.error(f"Error extracting metadata: {e}")
+    
+    return {'format': {'tags': {}}}
+
 def sanitize_filename(title):
     """Make filename safe for all filesystems."""
     safe_chars = " -._()[]{}#"
@@ -38,12 +87,14 @@ def sanitize_filename(title):
     return filename[:Config.MAX_FILENAME_LENGTH]
 
 def analyze_space_metrics(metadata_path):
-    """Extract and log viewer metrics from space metadata."""
+    """Extract and log comprehensive viewer metrics from space metadata."""
     try:
         with open(metadata_path, 'r', encoding='utf-8') as f:
             metadata = json.load(f)
         
         metrics = {
+            'title': metadata.get('title', ''),
+            'state': metadata.get('state', ''),
             'concurrent_viewers': metadata.get('concurrent_viewers', 0),
             'total_viewers': metadata.get('total_viewers', 0),
             'live_viewers': metadata.get('live_viewers', 0),
@@ -51,21 +102,143 @@ def analyze_space_metrics(metadata_path):
             'participants': len(metadata.get('participants', [])),
             'duration': metadata.get('duration', 0),
             'started_at': metadata.get('started_at', ''),
-            'ended_at': metadata.get('ended_at', '')
+            'ended_at': metadata.get('ended_at', ''),
+            'available_for_replay': metadata.get('available_for_replay', False),
+            'language': metadata.get('language', ''),
+            'creator': metadata.get('creator', {}).get('name', ''),
+            'creator_followers': metadata.get('creator', {}).get('followers_count', 0),
+            'description': metadata.get('description', ''),
+            'scheduled_start': metadata.get('scheduled_start', ''),
+            'recording_status': metadata.get('recording_status', ''),
+            'participant_count': len(metadata.get('participants', [])),
+            'likes': metadata.get('like_count', 0),
+            'retweets': metadata.get('retweet_count', 0)
         }
         
-        logging.info("Space Metrics:")
-        for key, value in metrics.items():
-            if value:
-                if key == 'duration':
-                    logging.info(f"Duration: {value/60:.1f} minutes")
-                else:
-                    logging.info(f"{key.replace('_', ' ').title()}: {value}")
+        logging.info("\nSpace Metrics:")
+        logging.info("=" * 50)
         
+        # Title and Creator Info
+        if metrics['title']:
+            logging.info(f"Title: {metrics['title']}")
+        if metrics['creator']:
+            logging.info(f"Creator: {metrics['creator']} (Followers: {metrics['creator_followers']:,})")
+        
+        # Time Information
+        if metrics['started_at'] and metrics['ended_at']:
+            start_time = datetime.strptime(metrics['started_at'], "%Y-%m-%dT%H:%M:%S.%fZ")
+            end_time = datetime.strptime(metrics['ended_at'], "%Y-%m-%dT%H:%M:%S.%fZ")
+            duration_mins = (end_time - start_time).total_seconds() / 60
+            logging.info(f"\nTiming:")
+            logging.info(f"Started: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+            logging.info(f"Ended: {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
+            logging.info(f"Duration: {duration_mins:.1f} minutes")
+        elif metrics['duration']:
+            logging.info(f"\nDuration: {metrics['duration']/60:.1f} minutes")
+        
+        # Viewer Statistics
+        logging.info("\nViewer Statistics:")
+        if metrics['concurrent_viewers']:
+            logging.info(f"Peak Concurrent Viewers: {metrics['concurrent_viewers']:,}")
+        if metrics['total_viewers']:
+            logging.info(f"Total Viewers: {metrics['total_viewers']:,}")
+        if metrics['live_viewers']:
+            logging.info(f"Live Viewers: {metrics['live_viewers']:,}")
+        if metrics['replay_viewers']:
+            logging.info(f"Replay Viewers: {metrics['replay_viewers']:,}")
+            
+        # Engagement Metrics
+        logging.info("\nEngagement:")
+        if metrics['participant_count']:
+            logging.info(f"Total Participants: {metrics['participant_count']:,}")
+        if metrics['likes']:
+            logging.info(f"Likes: {metrics['likes']:,}")
+        if metrics['retweets']:
+            logging.info(f"Retweets: {metrics['retweets']:,}")
+            
+        # Additional Information
+        logging.info("\nAdditional Information:")
+        if metrics['language']:
+            logging.info(f"Language: {metrics['language']}")
+        if metrics['state']:
+            logging.info(f"State: {metrics['state']}")
+        if metrics['recording_status']:
+            logging.info(f"Recording Status: {metrics['recording_status']}")
+        if metrics['available_for_replay']:
+            logging.info("Available for Replay: Yes")
+        if metrics['description']:
+            logging.info(f"\nDescription: {metrics['description']}")
+            
+        logging.info("=" * 50)
         return metrics
     except Exception as e:
         logging.error(f"Error analyzing space metrics: {e}")
         return None
+
+def is_video_space(formats):
+    """Improved video space detection."""
+    if not formats:
+        return False
+        
+    video_space = False
+    for fmt in formats:
+        if any([
+            fmt.get('vcodec', 'none').lower() not in ['none', 'n/a'],
+            fmt.get('width', 0) > 0 and fmt.get('height', 0) > 0,
+            fmt.get('fps', 0) > 0,
+            'video' in fmt.get('format_note', '').lower(),
+            fmt.get('acodec', '') == 'none',
+            'video only' in fmt.get('format', '').lower()
+        ]):
+            video_space = True
+            logging.info(f"Detected video indicators in format: {fmt.get('format', '')}")
+            break
+    
+    if not video_space:
+        logging.info("No video indicators found in formats")
+    return video_space
+
+def get_space_creation_date(file_path, specified_date=None):
+    """Get the creation date from file metadata or specified date."""
+    try:
+        # First try to get date from ffprobe
+        command = [
+            'ffprobe',
+            '-v', 'quiet',
+            '-print_format', 'json',
+            '-show_format',
+            '-show_entries', 'format_tags',
+            file_path
+        ]
+        result = subprocess.run(command, capture_output=True, text=True, check=True)
+        metadata = json.loads(result.stdout)
+        
+        # Try different date formats
+        creation_date = (
+            metadata.get('format', {}).get('tags', {}).get('creation_time') or
+            metadata.get('format', {}).get('tags', {}).get('date') or
+            metadata.get('streams', [{}])[0].get('tags', {}).get('creation_time')
+        )
+        
+        if creation_date:
+            for fmt in ["%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%d", "%Y%m%d"]:
+                try:
+                    return datetime.strptime(creation_date, fmt).strftime("%Y-%m-%d")
+                except ValueError:
+                    continue
+            
+        if specified_date:
+            try:
+                return datetime.strptime(specified_date, "%Y-%m-%d").strftime("%Y-%m-%d")
+            except ValueError:
+                logging.error(f"Invalid specified date format: {specified_date}")
+        
+        logging.warning("Using current date as fallback")
+        return datetime.now().strftime("%Y-%m-%d")
+        
+    except Exception as e:
+        logging.error(f"Error getting creation date: {e}")
+        return datetime.now().strftime("%Y-%m-%d")
 
 def verify_download(file_path, expected_duration=None):
     """Verify downloaded file integrity and duration."""
@@ -96,19 +269,25 @@ def verify_download(file_path, expected_duration=None):
         logging.error(f"Error verifying download: {e}")
         return False
 
-def is_video_space(formats):
-    """Detect if the space contains video content."""
-    for fmt in formats:
-        if any([
-            fmt.get('vcodec', 'none').lower() not in ['none', 'n/a'],
-            fmt.get('width', 0) > 0 and fmt.get('height', 0) > 0,
-            fmt.get('fps', 0) > 0,
-            'video' in fmt.get('format_note', '').lower(),
-            fmt.get('acodec', '') == 'none',
-            'video only' in fmt.get('format', '').lower()
-        ]):
-            return True
-    return False
+def cleanup_temp_files(space_id=None, preserve_metadata=True, had_errors=False):
+    """Clean up temporary files with better error handling."""
+    pattern = f'X-Space-{space_id}*' if space_id else 'X-Space-*'
+    preserved_extensions = ['.json', '.m3u8', '.info.json', '.m4a'] if had_errors else ['.json', '.info.json']
+    
+    try:
+        files = glob.glob(os.path.join(TEMP_DIR, pattern))
+        for file in files:
+            try:
+                if preserve_metadata and any(file.endswith(ext) for ext in preserved_extensions):
+                    logging.debug(f"Preserving file: {file}")
+                    continue
+                
+                os.remove(file)
+                logging.info(f"Removed temporary file: {file}")
+            except Exception as e:
+                logging.warning(f"Failed to remove temporary file {file}: {e}")
+    except Exception as e:
+        logging.error(f"Error during cleanup: {e}")
 
 def cleanup_temp_files(space_id=None, preserve_metadata=True, had_errors=False):
     """Clean up temporary files with better error handling."""
@@ -195,52 +374,6 @@ def copy_to_additional_location(source_file, output_copy_dir, space_id):
     except Exception as e:
         logging.error(f"Error copying to additional location: {e}")
         return False
-
-def get_space_creation_date(file_path, specified_date=None):
-    """Get the creation date from file metadata or specified date."""
-    try:
-        # First try to get date from ffprobe
-        command = [
-            'ffprobe',
-            '-v', 'quiet',
-            '-print_format', 'json',
-            '-show_format',
-            file_path
-        ]
-        result = subprocess.run(command, capture_output=True, text=True, check=True)
-        metadata = json.loads(result.stdout)
-        
-        # Try different metadata fields
-        creation_date = (
-            metadata.get('format', {}).get('tags', {}).get('creation_time') or
-            metadata.get('format', {}).get('tags', {}).get('date') or
-            specified_date
-        )
-        
-        if creation_date:
-            try:
-                if 'T' in creation_date:  # ISO format
-                    return datetime.strptime(creation_date.split('T')[0], "%Y-%m-%d").strftime("%Y-%m-%d")
-                elif len(creation_date) == 8:  # YYYYMMDD format
-                    return datetime.strptime(creation_date, "%Y%m%d").strftime("%Y-%m-%d")
-                else:
-                    return datetime.strptime(creation_date, "%Y-%m-%d").strftime("%Y-%m-%d")
-            except ValueError:
-                logging.warning(f"Invalid date format in metadata: {creation_date}")
-        
-        if specified_date:
-            try:
-                return datetime.strptime(specified_date, "%Y-%m-%d").strftime("%Y-%m-%d")
-            except ValueError:
-                logging.error(f"Invalid specified date format: {specified_date}")
-        
-        # Fallback to current date
-        logging.warning("Using current date as fallback")
-        return datetime.now().strftime("%Y-%m-%d")
-        
-    except Exception as e:
-        logging.error(f"Error getting creation date: {e}")
-        return datetime.now().strftime("%Y-%m-%d")
 
 def get_user_input(args):
     """Prompt for cookie file path if not provided."""
@@ -350,6 +483,73 @@ def download_space(space_url, cookie_path, debug):
         logging.error(f"Unexpected error during download: {str(e)}")
         raise
 
+def verify_download(file_path, expected_duration=None):
+    """Verify downloaded file integrity and duration."""
+    try:
+        command = [
+            'ffprobe',
+            '-v', 'quiet',
+            '-print_format', 'json',
+            '-show_format',
+            '-show_streams',
+            file_path
+        ]
+        result = subprocess.run(command, capture_output=True, text=True, check=True)
+        info = json.loads(result.stdout)
+        
+        duration = float(info.get('format', {}).get('duration', 0))
+        if duration < 60:
+            logging.warning(f"File duration suspiciously short: {duration} seconds")
+            return False
+            
+        if expected_duration and abs(duration - expected_duration) > 300:
+            logging.warning(f"Duration mismatch: got {duration/60:.1f}min, expected {expected_duration/60:.1f}min")
+            return False
+            
+        logging.info(f"File duration verified: {duration/60:.1f} minutes")
+        return True
+    except Exception as e:
+        logging.error(f"Error verifying download: {e}")
+        return False
+
+def get_unique_output_path(base_path, base_name, ext):
+    """Get a unique output path, checking for both exact matches and similar filenames."""
+    counter = 1
+    output_path = f'{base_path}/{base_name}{ext}'
+    while os.path.exists(output_path):
+        output_path = f'{base_path}/{base_name}_{counter}{ext}'
+        counter += 1
+    return output_path
+
+def get_space_creation_date(file_path, specified_date=None):
+    """Get the creation date from file metadata or specified date."""
+    try:
+        metadata = extract_metadata(file_path)
+        creation_date = (
+            metadata.get('format', {}).get('tags', {}).get('creation_time') or
+            metadata.get('format', {}).get('tags', {}).get('date') or
+            metadata.get('streams', [{}])[0].get('tags', {}).get('creation_time')
+        )
+        
+        if creation_date:
+            for fmt in ["%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%d", "%Y%m%d"]:
+                try:
+                    return datetime.strptime(creation_date, fmt).strftime("%Y-%m-%d")
+                except ValueError:
+                    continue
+                    
+        if specified_date:
+            try:
+                return datetime.strptime(specified_date, "%Y-%m-%d").strftime("%Y-%m-%d")
+            except ValueError:
+                logging.error(f"Invalid specified date format: {specified_date}")
+                
+        return datetime.now().strftime("%Y-%m-%d")
+        
+    except Exception as e:
+        logging.error(f"Error getting creation date: {e}")
+        return datetime.now().strftime("%Y-%m-%d")
+
 def add_metadata_to_m4a(file_path, title=None, date=None):
     """Add metadata to M4A file."""
     try:
@@ -387,27 +587,13 @@ def add_metadata_to_m4a(file_path, title=None, date=None):
     except Exception as e:
         logging.error(f"Error adding metadata: {str(e)}")
 
-def get_unique_output_path(base_path, base_name, ext):
-    """Get a unique output path, checking for both exact matches and similar filenames."""
-    # First, check if the exact file exists
-    output_path = f'{base_path}/{base_name}{ext}'
-    if not os.path.exists(output_path):
-        return output_path
-        
-    # Check if we already have numbered versions
-    counter = 1
-    while True:
-        output_path = f'{base_path}/{base_name}_{counter}{ext}'
-        if not os.path.exists(output_path):
-            return output_path
-        counter += 1
-
 def main():
     logging.info(f"Temporary files will be stored in: {TEMP_DIR}")
     
     args = parse_arguments()
     success = False
     had_errors = False
+    video_space = False  # Initialize video_space flag
     
     if args.debug:
         logging.getLogger().setLevel(logging.DEBUG)
@@ -440,16 +626,16 @@ def main():
                 with open(metadata_path, 'w', encoding='utf-8') as f:
                     json.dump(space_info, f, indent=2, ensure_ascii=False)
                 
-                # Analyze space metrics
+                # Analyze metrics first
                 analyze_space_metrics(metadata_path)
                 
-                # Improved video space detection
+                # Then detect video space
                 formats = space_info.get('formats', [])
-                is_video_space = is_video_space(formats)
+                video_space = is_video_space(formats)  # Store result in video_space variable
                 
                 if args.debug:
                     logging.debug(f"Space metadata: title='{space_title}', date='{space_date}', "
-                                f"is_video={is_video_space}, duration={expected_duration/60:.1f}min")
+                                f"is_video={video_space}, duration={expected_duration/60:.1f}min")
                     if formats:
                         logging.debug("Available formats:")
                         for fmt in formats:
@@ -462,7 +648,7 @@ def main():
                 logging.warning(f"Failed to get space metadata: {e}")
                 space_title = None
                 space_date = None
-                is_video_space = False
+                video_space = False
                 expected_duration = 0
                 had_errors = True
             
@@ -525,7 +711,7 @@ def main():
                         logging.info(f"Original audio file saved to: {os.path.abspath(final_output_path)}")
                         
                         # Convert to MP3 only if it's a video space
-                        if is_video_space:
+                        if video_space:
                             logging.info("Video space detected, converting to MP3...")
                             mp3_output_path = get_unique_output_path(space_folder, output_title, ".mp3")
                             convert_to_mp3(final_output_path, mp3_output_path, title=title, date=creation_date)
@@ -544,7 +730,7 @@ def main():
                         # Handle additional output location if specified
                         if args.output_copy:
                             copy_to_additional_location(final_output_path, args.output_copy, space_id)
-                            if is_video_space and os.path.exists(mp3_output_path):
+                            if video_space and os.path.exists(mp3_output_path):
                                 copy_to_additional_location(mp3_output_path, args.output_copy, space_id)
                         
                         # Clean up duplicate files in destination
@@ -573,10 +759,14 @@ def main():
             had_errors = True
         finally:
             if success and not had_errors:
-                if is_new_download:
-                    os.remove(temp_file_path)
-                    logging.info(f"Removed temporary file: {temp_file_path}")
-                cleanup_temp_files(space_id=space_id, preserve_metadata=False)
+                if is_new_download and os.path.exists(temp_file_path):
+                    try:
+                        os.remove(temp_file_path)
+                        logging.info(f"Removed temporary file: {temp_file_path}")
+                    except Exception as e:
+                        logging.warning(f"Failed to remove temporary file: {e}")
+                        had_errors = True
+                cleanup_temp_files(space_id=space_id, preserve_metadata=True)
                 logging.info("All temporary files cleaned up.")
             else:
                 logging.info("Keeping temporary files for debugging purposes.")
