@@ -13,8 +13,40 @@ DEFAULT_DOWNLOAD_DIR = '/mnt/e/AV/Capture/X-Recorder/'
 TEMP_DIR = os.path.expanduser("~/Downloads")
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+def analyze_space_metrics(metadata_path):
+    """Extract and log viewer metrics from space metadata."""
+    try:
+        with open(metadata_path, 'r', encoding='utf-8') as f:
+            metadata = json.load(f)
+
+        metrics = {
+            'concurrent_viewers': metadata.get('concurrent_viewers', 0),
+            'total_viewers': metadata.get('total_viewers', 0),
+            'live_viewers': metadata.get('live_viewers', 0),
+            'replay_viewers': metadata.get('replay_viewers', 0),
+            'participants': len(metadata.get('participants', [])),
+            'duration': metadata.get('duration', 0),
+            'started_at': metadata.get('started_at', ''),
+            'ended_at': metadata.get('ended_at', '')
+        }
+
+        logging.info("Space Metrics:")
+        for key, value in metrics.items():
+            if value:
+                if key == 'duration':
+                    logging.info(f"Duration: {value / 60:.1f} minutes")
+                elif key in ['started_at', 'ended_at']:
+                    logging.info(f"{key.replace('_', ' ').title()}: {value}")
+                else:
+                    logging.info(f"{key.replace('_', ' ').title()}: {value}")
+
+        return metrics
+    except Exception as e:
+        logging.error(f"Error analyzing space metrics: {e}")
+        return None
+
 def verify_download(file_path, expected_duration=None):
-    """Verify the downloaded file is complete and has the expected duration."""
+    """Verify downloaded file integrity and duration."""
     try:
         command = [
             'ffprobe',
@@ -26,16 +58,16 @@ def verify_download(file_path, expected_duration=None):
         ]
         result = subprocess.run(command, capture_output=True, text=True, check=True)
         info = json.loads(result.stdout)
-        
+
         duration = float(info.get('format', {}).get('duration', 0))
-        if duration < 60:  # Less than a minute
+        if duration < 60:
             logging.warning(f"File duration suspiciously short: {duration} seconds")
             return False
-            
-        if expected_duration and abs(duration - expected_duration) > 300:  # 5 minute tolerance
-            logging.warning(f"File duration mismatch: got {duration}s, expected {expected_duration}s")
+
+        if expected_duration and abs(duration - expected_duration) > 300:
+            logging.warning(f"Duration mismatch: got {duration / 60:.1f}min, expected {expected_duration / 60:.1f}min")
             return False
-            
+
         return True
     except Exception as e:
         logging.error(f"Error verifying download: {e}")
@@ -45,6 +77,8 @@ def parse_arguments():
     parser = argparse.ArgumentParser(description="X-Recorder: Record and archive X Spaces")
     parser.add_argument("-o", "--output", type=str, default=DEFAULT_DOWNLOAD_DIR,
                         help=f"Output directory for saving recordings (default: {DEFAULT_DOWNLOAD_DIR})")
+    parser.add_argument("-oc", "--output-copy", type=str,
+                        help="Additional directory to copy the recordings to")
     parser.add_argument("-c", "--cookie", type=str, help="Full path to the X cookie file")
     parser.add_argument("-d", "--debug", action="store_true", help="Enable debug mode for verbose output")
     parser.add_argument("-s", "--space", type=str, help="Direct link to a specific X Space")
@@ -93,65 +127,18 @@ def check_tmp_for_existing_files(space_id):
             try:
                 os.remove(partial_file)
                 logging.debug(f"Removed incomplete download: {partial_file}")
-            except Exception as e:
                 logging.warning(f"Failed to remove incomplete download {partial_file}: {e}")
     
     return None
 
 def download_space(space_url, cookie_path, debug):
+    """Download X Space with improved error handling and verification."""
     space_id = space_url.split('/')[-1]
     existing_file = check_tmp_for_existing_files(space_id)
 
-    # First get metadata to check expected duration
-    try:
-        metadata_command = [
-            'yt-dlp',
-            '--cookies', cookie_path,
-            '--dump-json',
-            '--no-download',
-            space_url
-        ]
-        metadata_result = subprocess.run(metadata_command, capture_output=True, text=True, check=True)
-        space_info = json.loads(metadata_result.stdout)
-        
-        # Save metadata JSON for debugging
-        metadata_path = f'{TEMP_DIR}/X-Space-{space_id}_metadata.json'
-        with open(metadata_path, 'w', encoding='utf-8') as f:
-            json.dump(space_info, f, indent=2, ensure_ascii=False)
-        
-        # Get expected duration from metadata
-        duration = float(space_info.get('duration', 0))
-        if duration:
-            logging.info(f"Expected space duration: {duration/60:.1f} minutes")
-    except Exception as e:
-        logging.warning(f"Could not get space metadata: {e}")
-        duration = 0
-
     if existing_file and os.path.exists(existing_file) and not existing_file.endswith('.part'):
-        # Verify existing file duration
-        try:
-            command = [
-                'ffprobe',
-                '-v', 'quiet',
-                '-print_format', 'json',
-                '-show_format',
-                existing_file
-            ]
-            result = subprocess.run(command, capture_output=True, text=True, check=True)
-            file_info = json.loads(result.stdout)
-            actual_duration = float(file_info.get('format', {}).get('duration', 0))
-            
-            if duration and abs(actual_duration - duration) > 300:  # 5 minute tolerance
-                logging.warning(f"Existing file duration mismatch: got {actual_duration/60:.1f} minutes, "
-                              f"expected {duration/60:.1f} minutes")
-                # Remove incomplete file
-                os.remove(existing_file)
-                logging.info(f"Removed incomplete file: {existing_file}")
-            else:
-                logging.info(f"Found previously downloaded file at {existing_file}, using it for processing.")
-                return existing_file, False
-        except Exception as e:
-            logging.warning(f"Could not verify existing file duration: {e}")
+        logging.info(f"Found previously downloaded file at {existing_file}, using it for processing.")
+        return existing_file, False
 
     logging.info(f"Initiating download...")
     temp_file_path = f'{TEMP_DIR}/X-Space-{space_id}_temp.m4a'
@@ -162,49 +149,32 @@ def download_space(space_url, cookie_path, debug):
             'yt-dlp',
             '--cookies', cookie_path,
             '--write-info-json',
-            '--continue',              # Enable download resumption
-            '--no-part',               # Don't use .part files
+            '--continue',  # Enable download resumption
+            '--no-part',  # Don't use .part files
             '--fragment-retries', 'infinite',  # Keep retrying failed fragments
-            '--retries', 'infinite',          # Keep retrying on errors
+            '--retries', 'infinite',  # Keep retrying on errors
             '--extractor-args', 'twitter:max_retries=3',  # Twitter-specific retries
             '-o', temp_file_path,
             space_url
         ]
-        
+
         if debug:
             logging.debug(f"Running download command: {' '.join(download_command)}")
-        
+
         subprocess.run(download_command, check=True)
-        
+
         if os.path.exists(temp_file_path):
-            # Verify downloaded file duration
-            try:
-                command = [
-                    'ffprobe',
-                    '-v', 'quiet',
-                    '-print_format', 'json',
-                    '-show_format',
-                    temp_file_path
-                ]
-                result = subprocess.run(command, capture_output=True, text=True, check=True)
-                file_info = json.loads(result.stdout)
-                actual_duration = float(file_info.get('format', {}).get('duration', 0))
-                
-                if duration and abs(actual_duration - duration) > 300:  # 5 minute tolerance
-                    logging.error(f"Download duration mismatch: got {actual_duration/60:.1f} minutes, "
-                                f"expected {duration/60:.1f} minutes")
-                    return None, False
-                
-                logging.info(f"Successfully downloaded space to {temp_file_path} "
-                           f"(duration: {actual_duration/60:.1f} minutes)")
+            # Verify the download
+            if verify_download(temp_file_path):
+                logging.info(f"Successfully downloaded and verified space to {temp_file_path}")
                 return temp_file_path, True
-            except Exception as e:
-                logging.error(f"Error verifying download duration: {e}")
+            else:
+                logging.error("Download verification failed")
                 return None, False
-        
+
         logging.error("Download completed but file not found at expected location")
         return None, False
-            
+
     except subprocess.CalledProcessError as e:
         logging.error(f'Error downloading space with yt-dlp: {e}')
         raise
@@ -380,36 +350,51 @@ def convert_to_mp3(input_path, output_path, title=None, date=None):
         logging.error(f"Error converting to MP3: {e}")
         return False
 
+def is_video_space(formats):
+    """Improved video space detection."""
+    for fmt in formats:
+        if any([
+            fmt.get('vcodec', 'none').lower() not in ['none', 'n/a'],
+            fmt.get('width', 0) > 0 and fmt.get('height', 0) > 0,
+            fmt.get('fps', 0) > 0,
+            'video' in fmt.get('format_note', '').lower(),
+            fmt.get('acodec', '') == 'none',
+            'video only' in fmt.get('format', '').lower()
+        ]):
+            return True
+    return False
+
+
 def cleanup_temp_files(space_id=None, preserve_metadata=True, had_errors=False):
-    """
-    Clean up temporary files, preserving metadata files if there were errors.
-    
-    Args:
-        space_id: If provided, only clean files for this space ID
-        preserve_metadata: If True, preserve metadata and manifest files
-        had_errors: If True, preserve all metadata files for debugging
-    """
+    """Clean up temporary files with better error handling."""
     pattern = f'X-Space-{space_id}*' if space_id else 'X-Space-*'
+    preserved_extensions = ['.json', '.m3u8', '.info.json', '.m4a'] if had_errors else ['.json', '.info.json']
+
     try:
         files = glob.glob(os.path.join(TEMP_DIR, pattern))
         for file in files:
             try:
-                # Skip files we want to preserve
-                if had_errors or (preserve_metadata and any(x in file for x in [
-                    '_metadata.json', 
-                    '_manifest.m3u8', 
-                    '.info.json',
-                    '.ytdl'
-                ])):
-                    logging.debug(f"Preserving file for debugging: {file}")
+                if preserve_metadata and any(file.endswith(ext) for ext in preserved_extensions):
+                    logging.debug(f"Preserving file: {file}")
                     continue
-                    
+
                 os.remove(file)
                 logging.info(f"Removed temporary file: {file}")
             except Exception as e:
                 logging.warning(f"Failed to remove temporary file {file}: {e}")
     except Exception as e:
         logging.error(f"Error during cleanup: {e}")
+
+
+@dataclass
+class Config:
+    """Configuration settings for X-Recorder."""
+    DEFAULT_DOWNLOAD_DIR: str = '/mnt/e/AV/Capture/X-Recorder/'
+    TEMP_DIR: str = os.path.expanduser("~/Downloads")
+    VALID_AUDIO_EXTENSIONS: tuple = ('.m4a', '.mp3')
+    MAX_FILENAME_LENGTH: int = 255
+    METADATA_EXTENSIONS: tuple = ('.json', '.m3u8', '.info.json', '.ytdl')
+
 
 def sanitize_filename(title):
     """Make filename safe for all filesystems."""
@@ -451,6 +436,25 @@ def cleanup_destination_duplicates(space_folder, space_id):
     except Exception as e:
         logging.error(f"Error cleaning up destination duplicates: {e}")
 
+def copy_to_additional_location(source_file, output_copy_dir, space_id):
+    """Copy the file to an additional location."""
+    try:
+        # Create the space folder in the copy location
+        copy_space_folder = os.path.join(output_copy_dir, space_id)
+        os.makedirs(copy_space_folder, exist_ok=True)
+        
+        # Get the filename without the path
+        filename = os.path.basename(source_file)
+        copy_path = os.path.join(copy_space_folder, filename)
+        
+        # Copy the file
+        shutil.copy2(source_file, copy_path)
+        logging.info(f"Successfully copied file to additional location: {copy_path}")
+        return True
+    except Exception as e:
+        logging.error(f"Error copying to additional location: {e}")
+        return False
+
 def main():
     logging.info(f"Temporary files will be stored in: {TEMP_DIR}")
     
@@ -484,6 +488,11 @@ def main():
                 space_date = space_info.get('upload_date', '')
                 expected_duration = float(space_info.get('duration', 0))
                 
+                # Save metadata JSON for future reference
+                metadata_path = f'{TEMP_DIR}/X-Space-{space_id}_metadata.json'
+                with open(metadata_path, 'w', encoding='utf-8') as f:
+                    json.dump(space_info, f, indent=2, ensure_ascii=False)
+                
                 # Improved video space detection
                 formats = space_info.get('formats', [])
                 is_video_space = False
@@ -505,6 +514,14 @@ def main():
                 if args.debug:
                     logging.debug(f"Space metadata: title='{space_title}', date='{space_date}', "
                                 f"is_video={is_video_space}, duration={expected_duration/60:.1f}min")
+                    if formats:
+                        logging.debug("Available formats:")
+                        for fmt in formats:
+                            logging.debug(f"Format: {fmt}")
+                
+                if expected_duration > 0:
+                    logging.info(f"Expected space duration: {expected_duration/60:.1f} minutes")
+                
             except Exception as e:
                 logging.warning(f"Failed to get space metadata: {e}")
                 space_title = None
@@ -584,58 +601,31 @@ def main():
                     add_metadata_to_m4a(temp_file_path, title=title, date=creation_date)
                     
                     final_output_path = get_unique_output_path(space_folder, output_title, ".m4a")
-                    mp3_output_path = get_unique_output_path(space_folder, output_title, ".mp3")
+                    
                     try:
                         shutil.copy2(temp_file_path, final_output_path)
                         logging.info(f"Successfully copied file to {final_output_path}")
                         logging.info(f"Original audio file saved to: {os.path.abspath(final_output_path)}")
                         
-                        # Only convert to MP3 if it's a video space
+                        # Convert to MP3 only if it's a video space
                         if is_video_space:
                             logging.info("Video space detected, converting to MP3...")
                             mp3_output_path = get_unique_output_path(space_folder, output_title, ".mp3")
                             convert_to_mp3(final_output_path, mp3_output_path)
                             logging.info(f"MP3 file saved to: {os.path.abspath(mp3_output_path)}")
-                            logging.info("Keeping both M4A (video) and MP3 (audio) files")
                         else:
-                            logging.info("Audio-only space detected, keeping original M4A format for better quality")
+                            logging.info("Audio-only space detected, keeping M4A format")
+                        
+                        # Copy metadata files to destination
+                        metadata_files = glob.glob(os.path.join(TEMP_DIR, f'X-Space-{space_id}*.*'))
+                        for metadata_file in metadata_files:
+                            if any(x in metadata_file for x in ['_metadata.json', '.info.json']):
+                                dest_metadata = os.path.join(space_folder, os.path.basename(metadata_file))
+                                shutil.copy2(metadata_file, dest_metadata)
+                                logging.debug(f"Copied metadata file to: {dest_metadata}")
                         
                         # Clean up duplicate files in destination
-                        cleanup_destination_duplicates(space_folder, space_id)
-                        
-                        success = True and not had_errors
-                        
-                    except IOError as e:
-                        logging.error(f"Error copying file to final location: {e}")
-                        had_errors = True
-                        raise
-                except Exception as e:
-                    logging.error(f"Error processing file: {e}")
-                    had_errors = True
-                    raise
-            else:
-                logging.error("Failed to download or locate the space file.")
-                had_errors = True
-                raise Exception("Failed to download or locate the space file.")
-        
-        except subprocess.CalledProcessError as e:
-            logging.error(f"Error occurred during download: {e}")
-            had_errors = True
-        except Exception as e:
-            logging.error(f"Failed to process the X Space: {str(e)}")
-            had_errors = True
-        finally:
-            if success and not had_errors:
-                if is_new_download:
-                    os.remove(temp_file_path)
-                    logging.info(f"Removed temporary file: {temp_file_path}")
-                cleanup_temp_files(space_id=space_id, preserve_metadata=False)
-                logging.info("All temporary files cleaned up.")
-            else:
-                logging.info("Keeping temporary files for debugging purposes.")
-    
-    else:
-        logging.error("Please provide a direct space link using the -s option.")
+                        cleanup_destination_duplicates
 
 if __name__ == "__main__":
     main()
