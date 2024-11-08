@@ -9,6 +9,10 @@ import logging
 from datetime import datetime
 from dataclasses import dataclass
 
+from pydub import AudioSegment
+from pydub.silence import detect_silence
+
+
 # Configuration
 DEFAULT_DOWNLOAD_DIR = '/mnt/e/AV/Capture/X-Recorder/'
 TEMP_DIR = os.path.expanduser("~/Downloads")
@@ -174,6 +178,10 @@ def analyze_space_metrics(metadata_path):
     except Exception as e:
         logging.error(f"Error analyzing space metrics: {e}")
         return None
+
+def get_file_size_mb(file_path):
+    """Get file size in megabytes."""
+    return os.path.getsize(file_path) / (1024 * 1024)
 
 def is_video_space(formats):
     """Improved video space detection."""
@@ -512,6 +520,64 @@ def verify_download(file_path, expected_duration=None):
         logging.error(f"Error verifying download: {e}")
         return False
 
+def convert_to_mp3(input_path, output_path, title=None, date=None):
+    """Convert to MP3 and add metadata."""
+    try:
+        command = [
+            'ffmpeg',
+            '-i', input_path,
+            '-c:a', 'libmp3lame',
+            '-b:a', '192k',  # 192k bitrate for good quality and smaller file size
+            '-map_metadata', '0'
+        ]
+        
+        # Add metadata if provided
+        if title:
+            command.extend(['-metadata', f'title={title}'])
+        if date:
+            command.extend(['-metadata', f'date={date}'])
+            
+        command.append(output_path)
+        
+        subprocess.run(command, check=True, capture_output=True, text=True)
+        logging.info(f"Successfully converted to MP3: {output_path}")
+        return True
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Error converting to MP3: {e}")
+        if e.stderr:
+            logging.error(f"FFmpeg error output: {e.stderr}")
+        return False
+    except Exception as e:
+        logging.error(f"Unexpected error during MP3 conversion: {e}")
+        return False
+
+def detect_long_silence(audio_path, min_silence_len=300000, silence_thresh=-50, max_duration=7200000):
+    """
+    Detect silence longer than 5 minutes (300000 ms) in the audio file.
+    Returns the start time of the long silence in milliseconds.
+    Max duration is set to 2 hours (7200000 ms) by default.
+    """
+    audio = AudioSegment.from_file(audio_path)
+    total_duration = len(audio)
+    
+    # If the audio is longer than max_duration, start checking from max_duration
+    start_check = min(total_duration, max_duration)
+    
+    silence_ranges = detect_silence(audio[start_check:], min_silence_len=min_silence_len, silence_thresh=silence_thresh)
+    
+    if silence_ranges:
+        return start_check + silence_ranges[0][0]  # Return the start of the first long silence
+    return None
+
+def trim_audio(input_path, output_path, trim_point):
+    """
+    Trim the audio file from the beginning to the trim point.
+    """
+    audio = AudioSegment.from_file(input_path)
+    trimmed_audio = audio[:trim_point]
+    trimmed_audio.export(output_path, format="m4a")
+    logging.info(f"Audio trimmed at {trim_point/1000:.2f} seconds ({trim_point/60000:.2f} minutes)")
+
 def get_unique_output_path(base_path, base_name, ext):
     """Get a unique output path, checking for both exact matches and similar filenames."""
     counter = 1
@@ -593,7 +659,7 @@ def main():
     args = parse_arguments()
     success = False
     had_errors = False
-    video_space = False  # Initialize video_space flag
+    video_space = False
     
     if args.debug:
         logging.getLogger().setLevel(logging.DEBUG)
@@ -631,7 +697,7 @@ def main():
                 
                 # Then detect video space
                 formats = space_info.get('formats', [])
-                video_space = is_video_space(formats)  # Store result in video_space variable
+                video_space = is_video_space(formats)
                 
                 if args.debug:
                     logging.debug(f"Space metadata: title='{space_title}', date='{space_date}', "
@@ -710,14 +776,27 @@ def main():
                         logging.info(f"Successfully copied file to {final_output_path}")
                         logging.info(f"Original audio file saved to: {os.path.abspath(final_output_path)}")
                         
-                        # Convert to MP3 only if it's a video space
-                        if video_space:
-                            logging.info("Video space detected, converting to MP3...")
-                            mp3_output_path = get_unique_output_path(space_folder, output_title, ".mp3")
-                            convert_to_mp3(final_output_path, mp3_output_path, title=title, date=creation_date)
-                            logging.info(f"MP3 file saved to: {os.path.abspath(mp3_output_path)}")
+                        file_size_mb = get_file_size_mb(final_output_path)
+                        logging.info(f"File size: {file_size_mb:.2f} MB")
+
+                        logging.info("Attempting to detect long silence...")
+                        long_silence_point = detect_long_silence(final_output_path, max_duration=7200000)  # 2 hours in milliseconds
+                        if long_silence_point:
+                            logging.info(f"Detected long silence at {long_silence_point/1000:.2f} seconds ({long_silence_point/60000:.2f} minutes). Trimming audio...")
+                            trimmed_output_path = get_unique_output_path(space_folder, f"{output_title}_trimmed", ".m4a")
+                            trim_audio(final_output_path, trimmed_output_path, long_silence_point)
+                            
+                            # Check if the trimmed file is significantly smaller
+                            trimmed_size_mb = get_file_size_mb(trimmed_output_path)
+                            if trimmed_size_mb < file_size_mb * 0.9:  # If trimmed file is at least 10% smaller
+                                logging.info(f"Trimmed file is smaller ({trimmed_size_mb:.2f} MB). Keeping trimmed version.")
+                                os.remove(final_output_path)
+                                final_output_path = trimmed_output_path
+                            else:
+                                logging.info("Trimmed file is not significantly smaller. Keeping original file.")
+                                os.remove(trimmed_output_path)
                         else:
-                            logging.info("Audio-only space detected, keeping M4A format")
+                            logging.info("No long silences detected after 2 hours. Keeping original file.")
                         
                         # Copy metadata files to destination
                         metadata_files = glob.glob(os.path.join(TEMP_DIR, f'X-Space-{space_id}*.*'))
@@ -730,18 +809,18 @@ def main():
                         # Handle additional output location if specified
                         if args.output_copy:
                             copy_to_additional_location(final_output_path, args.output_copy, space_id)
-                            if video_space and os.path.exists(mp3_output_path):
-                                copy_to_additional_location(mp3_output_path, args.output_copy, space_id)
                         
                         # Clean up duplicate files in destination
                         cleanup_destination_duplicates(space_folder, space_id)
                         
                         success = True and not had_errors
                         
-                    except IOError as e:
-                        logging.error(f"Error copying file to final location: {e}")
+                    except Exception as e:
+                        logging.error(f"Error processing audio file: {str(e)}")
+                        logging.error(f"Error type: {type(e).__name__}")
+                        logging.error(f"Error occurred in file: {__file__}")
+                        logging.error(f"Error occurred on line: {sys.exc_info()[-1].tb_lineno}")
                         had_errors = True
-                        raise
                 except Exception as e:
                     logging.error(f"Error processing file: {e}")
                     had_errors = True
@@ -758,6 +837,21 @@ def main():
             logging.error(f"Failed to process the X Space: {str(e)}")
             had_errors = True
         finally:
+            try:
+                # Generate summary report
+                if success and os.path.exists(metadata_path):
+                    generate_summary_report(
+                        metadata_path=metadata_path,
+                        space_id=space_id,
+                        final_output_path=final_output_path,
+                        duration=expected_duration,
+                        success=success,
+                        had_errors=had_errors
+                    )
+            except Exception as e:
+                logging.error(f"Error generating summary report: {e}")
+                had_errors = True
+
             if success and not had_errors:
                 if is_new_download and os.path.exists(temp_file_path):
                     try:
