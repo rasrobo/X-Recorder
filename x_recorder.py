@@ -1,6 +1,7 @@
 import argparse
 import subprocess
 import os
+import sys
 import glob
 import json
 import shutil
@@ -9,8 +10,16 @@ import logging
 from datetime import datetime
 from dataclasses import dataclass
 
-from pydub import AudioSegment
-from pydub.silence import detect_silence
+import subprocess
+import math
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+
+TWITCH_CLIENT_ID = os.getenv('TWITCH_CLIENT_ID')
+TWITCH_OAUTH_TOKEN = os.getenv('TWITCH_OAUTH_TOKEN')
+
 
 
 # Configuration
@@ -81,6 +90,44 @@ def extract_metadata(file_path):
         logging.error(f"Error extracting metadata: {e}")
     
     return {'format': {'tags': {}}}
+
+def split_audio_file(input_file, output_folder, max_duration=7200):  # 7200 seconds = 2 hours
+    try:
+        # Get the total duration of the input file
+        total_duration = get_audio_duration(input_file)
+        
+        # Calculate the number of chunks needed
+        num_chunks = math.ceil(total_duration / max_duration)
+        
+        if num_chunks == 1:
+            logging.info("File duration is less than 2 hours. No splitting required.")
+            return [input_file]
+        
+        output_files = []
+        base_name = os.path.splitext(os.path.basename(input_file))[0]
+        for i in range(num_chunks):
+            start_time = i * max_duration
+            output_title = f"{base_name}_part{i+1}"
+            output_file = get_unique_output_path(output_folder, output_title, ".m4a")
+            
+            ffmpeg_cmd = [
+                'ffmpeg',
+                '-i', input_file,
+                '-ss', str(start_time),
+                '-t', str(max_duration),
+                '-c', 'copy',
+                '-y',  # Overwrite output files without asking
+                output_file
+            ]
+            
+            subprocess.run(ffmpeg_cmd, check=True)
+            output_files.append(output_file)
+            logging.info(f"Created split file: {output_file}")
+        
+        return output_files
+    except Exception as e:
+        logging.error(f"Error splitting audio file: {str(e)}")
+        return [input_file]  # Return the original file if splitting fails
 
 def sanitize_filename(title):
     """Make filename safe for all filesystems."""
@@ -281,26 +328,6 @@ def cleanup_temp_files(space_id=None, preserve_metadata=True, had_errors=False):
     """Clean up temporary files with better error handling."""
     pattern = f'X-Space-{space_id}*' if space_id else 'X-Space-*'
     preserved_extensions = ['.json', '.m3u8', '.info.json', '.m4a'] if had_errors else ['.json', '.info.json']
-    
-    try:
-        files = glob.glob(os.path.join(TEMP_DIR, pattern))
-        for file in files:
-            try:
-                if preserve_metadata and any(file.endswith(ext) for ext in preserved_extensions):
-                    logging.debug(f"Preserving file: {file}")
-                    continue
-                
-                os.remove(file)
-                logging.info(f"Removed temporary file: {file}")
-            except Exception as e:
-                logging.warning(f"Failed to remove temporary file {file}: {e}")
-    except Exception as e:
-        logging.error(f"Error during cleanup: {e}")
-
-def cleanup_temp_files(space_id=None, preserve_metadata=True, had_errors=False):
-    """Clean up temporary files with better error handling."""
-    pattern = f'X-Space-{space_id}*' if space_id else 'X-Space-*'
-    preserved_extensions = ['.json', '.m3u8', '.info.json', '.m4a'] if had_errors else ['.json', '.info.json']
     try:
         files = glob.glob(os.path.join(TEMP_DIR, pattern))
         for file in files:
@@ -339,30 +366,33 @@ def sanitize_filename(title):
     return filename
 
 def cleanup_destination_duplicates(space_folder, space_id):
-    """Clean up duplicate files in destination folder, keeping the most informative one."""
+    """Clean up duplicate files in destination folder, keeping all split files."""
     try:
-        # Get all m4a files for this space
         files = glob.glob(os.path.join(space_folder, f'*-X-Space-#{space_id}*.m4a'))
-        if len(files) <= 1:
-            return
+        if not files:
+            return None
 
-        # Sort files by name length (longer names typically have more info)
-        # and then by modification time (newer first)
-        files.sort(key=lambda x: (-len(os.path.basename(x)), -os.path.getmtime(x)))
+        # Sort files by modification time (newest first)
+        files.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+        
+        # Keep all files that are part of the most recent set (split files)
+        most_recent_base = os.path.splitext(files[0])[0].rsplit('_part', 1)[0]
+        keep_files = [f for f in files if f.startswith(most_recent_base)]
+        
+        # Remove older files
+        for file in files:
+            if file not in keep_files:
+                try:
+                    os.remove(file)
+                    logging.info(f"Removed duplicate file: {file}")
+                except Exception as e:
+                    logging.warning(f"Failed to remove duplicate file {file}: {e}")
 
-        # Keep the first file (most informative/newest) and remove others
-        keep_file = files[0]
-        for file in files[1:]:
-            try:
-                os.remove(file)
-                logging.info(f"Removed duplicate file: {file}")
-            except Exception as e:
-                logging.warning(f"Failed to remove duplicate file {file}: {e}")
-
-        logging.info(f"Kept most informative file: {keep_file}")
-
+        logging.info(f"Kept files: {keep_files}")
+        return keep_files
     except Exception as e:
         logging.error(f"Error cleaning up destination duplicates: {e}")
+        return None
 
 def copy_to_additional_location(source_file, output_copy_dir, space_id):
     """Copy the file to an additional location."""
@@ -390,21 +420,6 @@ def get_user_input(args):
     else:
         cookie_path = args.cookie
     return {'cookie_path': cookie_path}
-
-def parse_arguments():
-    """Parse command-line arguments for X-Recorder."""
-    parser = argparse.ArgumentParser(description="X-Recorder: Record and archive X Spaces")
-    parser.add_argument("-o", "--output", type=str, default=DEFAULT_DOWNLOAD_DIR,
-                        help=f"Output directory for saving recordings (default: {DEFAULT_DOWNLOAD_DIR})")
-    parser.add_argument("-oc", "--output-copy", type=str, 
-                        help="Additional directory to copy the recordings to")
-    parser.add_argument("-c", "--cookie", type=str, 
-                        help="Full path to the X cookie file")
-    parser.add_argument("-d", "--debug", action="store_true", 
-                        help="Enable debug mode for verbose output")
-    parser.add_argument("-s", "--space", type=str, 
-                        help="Direct link to a specific X Space")
-    return parser.parse_args()
 
 def check_tmp_for_existing_files(space_id):
     """Check for existing files and return the media file if found."""
@@ -552,22 +567,66 @@ def convert_to_mp3(input_path, output_path, title=None, date=None):
         return False
 
 def detect_long_silence(audio_path, min_silence_len=300000, silence_thresh=-50, max_duration=7200000):
-    """
-    Detect silence longer than 5 minutes (300000 ms) in the audio file.
-    Returns the start time of the long silence in milliseconds.
-    Max duration is set to 2 hours (7200000 ms) by default.
-    """
-    audio = AudioSegment.from_file(audio_path)
-    total_duration = len(audio)
-    
-    # If the audio is longer than max_duration, start checking from max_duration
-    start_check = min(total_duration, max_duration)
-    
-    silence_ranges = detect_silence(audio[start_check:], min_silence_len=min_silence_len, silence_thresh=silence_thresh)
-    
-    if silence_ranges:
-        return start_check + silence_ranges[0][0]  # Return the start of the first long silence
-    return None
+    """Detect silence using ffmpeg instead of pydub."""
+    try:
+        # Use ffmpeg to analyze audio
+        command = [
+            'ffmpeg',
+            '-i', audio_path,
+            '-af', f'silencedetect=n={silence_thresh}dB:d={min_silence_len/1000}',
+            '-f', 'null',
+            '-'
+        ]
+        
+        result = subprocess.run(command, capture_output=True, text=True, stderr=subprocess.PIPE)
+        
+        # Parse ffmpeg output for silence detection
+        silence_starts = []
+        for line in result.stderr.split('\n'):
+            if 'silence_start' in line:
+                try:
+                    silence_start = float(line.split('silence_start: ')[1].split()[0])
+                    silence_starts.append(silence_start * 1000)  # Convert to milliseconds
+                except (IndexError, ValueError):
+                    continue
+        
+        if silence_starts:
+            # Return the first silence after 2 hours (if any)
+            for start in silence_starts:
+                if start >= max_duration:
+                    return start
+        
+        return None
+    except Exception as e:
+        logging.error(f"Error in detect_long_silence: {str(e)}")
+        return None
+
+def cleanup_destination_duplicates(space_folder, space_id):
+    """Clean up duplicate files in destination folder, keeping the most recent one."""
+    try:
+        files = glob.glob(os.path.join(space_folder, f'*-X-Space-#{space_id}*.m4a'))
+        if not files:
+            return None
+            
+        if len(files) == 1:
+            return files[0]
+
+        # Sort files by modification time (newest first)
+        files.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+        keep_file = files[0]
+        
+        for file in files[1:]:
+            try:
+                os.remove(file)
+                logging.info(f"Removed duplicate file: {file}")
+            except Exception as e:
+                logging.warning(f"Failed to remove duplicate file {file}: {e}")
+
+        logging.info(f"Kept most recent file: {keep_file}")
+        return keep_file
+    except Exception as e:
+        logging.error(f"Error cleaning up destination duplicates: {e}")
+        return None
 
 def trim_audio(input_path, output_path, trim_point):
     """
@@ -578,14 +637,19 @@ def trim_audio(input_path, output_path, trim_point):
     trimmed_audio.export(output_path, format="m4a")
     logging.info(f"Audio trimmed at {trim_point/1000:.2f} seconds ({trim_point/60000:.2f} minutes)")
 
-def get_unique_output_path(base_path, base_name, ext):
+def get_unique_output_path(base_path, output_title, extension):
     """Get a unique output path, checking for both exact matches and similar filenames."""
     counter = 1
-    output_path = f'{base_path}/{base_name}{ext}'
-    while os.path.exists(output_path):
-        output_path = f'{base_path}/{base_name}_{counter}{ext}'
+    while True:
+        if counter == 1:
+            file_name = f"{output_title}{extension}"
+        else:
+            file_name = f"{output_title}_{counter}{extension}"
+        
+        file_path = os.path.join(base_path, file_name)
+        if not os.path.exists(file_path):
+            return file_path
         counter += 1
-    return output_path
 
 def get_space_creation_date(file_path, specified_date=None):
     """Get the creation date from file metadata or specified date."""
@@ -653,6 +717,103 @@ def add_metadata_to_m4a(file_path, title=None, date=None):
     except Exception as e:
         logging.error(f"Error adding metadata: {str(e)}")
 
+
+
+def cleanup_destination_duplicates(space_folder, space_id):
+    """Clean up duplicate files in destination folder, keeping all split files."""
+    try:
+        files = glob.glob(os.path.join(space_folder, f'*-X-Space-#{space_id}*.m4a'))
+        if not files:
+            return []
+
+        # Sort files by modification time (newest first)
+        files.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+        
+        # Keep all files that are part of the most recent set (split files)
+        most_recent_base = os.path.splitext(files[0])[0].rsplit('_part', 1)[0]
+        keep_files = [f for f in files if f.startswith(most_recent_base)]
+        
+        # Remove older files that are not part of the most recent set
+        for file in files:
+            if file not in keep_files:
+                try:
+                    os.remove(file)
+                    logging.info(f"Removed duplicate file: {file}")
+                except Exception as e:
+                    logging.warning(f"Failed to remove duplicate file {file}: {e}")
+
+        logging.info(f"Kept files: {keep_files}")
+        return keep_files
+    except Exception as e:
+        logging.error(f"Error cleaning up destination duplicates: {e}")
+        return []
+
+def get_audio_duration(file_path):
+    try:
+        probe_cmd = [
+            'ffprobe',
+            '-v', 'error',
+            '-show_entries', 'format=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1',
+            file_path
+        ]
+        duration = float(subprocess.check_output(probe_cmd).decode('utf-8').strip())
+        return duration
+    except Exception as e:
+        logging.error(f"Error getting audio duration: {str(e)}")
+        return 0
+
+def download_twitch_vod(vod_url, output_path):
+    try:
+        command = [
+            'yt-dlp',
+            '--no-part',
+            '--no-continue',
+            '-o', output_path,
+            vod_url
+        ]
+        subprocess.run(command, check=True)
+        logging.info(f"Successfully downloaded Twitch VOD to {output_path}")
+        return output_path
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Error downloading Twitch VOD: {e}")
+        return None
+
+def parse_arguments():
+    parser = argparse.ArgumentParser(description="X-Recorder and Twitch VOD Downloader")
+    parser.add_argument("-o", "--output", type=str, default=DEFAULT_DOWNLOAD_DIR,
+                        help=f"Output directory for saving recordings (default: {DEFAULT_DOWNLOAD_DIR})")
+    parser.add_argument("-oc", "--output-copy", type=str, 
+                        help="Additional directory to copy the recordings to")
+    parser.add_argument("-c", "--cookie", type=str, 
+                        help="Full path to the X cookie file")
+    parser.add_argument("-d", "--debug", action="store_true", 
+                        help="Enable debug mode for verbose output")
+    parser.add_argument("-u", "--url", type=str, 
+                        help="Direct link to a specific X Space or Twitch VOD")
+    parser.add_argument("-s", "--space", type=str, 
+                        help="Direct link to a specific X Space")
+    return parser.parse_args()
+
+def process_x_space(space_url, user_input, args):
+    # Existing X Space processing logic here
+    pass
+
+def process_twitch_vod(vod_url, args):
+    vod_id = vod_url.split('/')[-1]
+    output_folder = os.path.join(args.output, f"twitch_{vod_id}")
+    os.makedirs(output_folder, exist_ok=True)
+    
+    output_path = os.path.join(output_folder, f"twitch_vod_{vod_id}.mp4")
+    downloaded_file = download_twitch_vod(vod_url, output_path)
+    
+    if downloaded_file:
+        logging.info(f"Twitch VOD downloaded: {downloaded_file}")
+        # Add any post-processing steps for Twitch VODs here
+    else:
+        logging.error("Failed to download Twitch VOD")
+
+
 def main():
     logging.info(f"Temporary files will be stored in: {TEMP_DIR}")
     
@@ -666,207 +827,83 @@ def main():
 
     user_input = get_user_input(args)
     
-    if args.space:
-        space_url = args.space
-        space_id = space_url.split('/')[-1]
-        
-        try:
-            # First, get metadata using yt-dlp
-            metadata_command = [
-                'yt-dlp',
-                '--cookies', user_input['cookie_path'],
-                '--dump-json',
-                '--no-download',
-                space_url
-            ]
-            
-            try:
-                metadata_result = subprocess.run(metadata_command, capture_output=True, text=True, check=True)
-                space_info = json.loads(metadata_result.stdout)
-                space_title = str(space_info.get('title', ''))
-                space_date = space_info.get('upload_date', '')
-                expected_duration = float(space_info.get('duration', 0))
-                
-                # Save metadata JSON for future reference
-                metadata_path = f'{TEMP_DIR}/X-Space-{space_id}_metadata.json'
-                with open(metadata_path, 'w', encoding='utf-8') as f:
-                    json.dump(space_info, f, indent=2, ensure_ascii=False)
-                
-                # Analyze metrics first
-                analyze_space_metrics(metadata_path)
-                
-                # Then detect video space
-                formats = space_info.get('formats', [])
-                video_space = is_video_space(formats)
-                
-                if args.debug:
-                    logging.debug(f"Space metadata: title='{space_title}', date='{space_date}', "
-                                f"is_video={video_space}, duration={expected_duration/60:.1f}min")
-                    if formats:
-                        logging.debug("Available formats:")
-                        for fmt in formats:
-                            logging.debug(f"Format: {fmt}")
-                
-                if expected_duration > 0:
-                    logging.info(f"Expected space duration: {expected_duration/60:.1f} minutes")
-                
-            except Exception as e:
-                logging.warning(f"Failed to get space metadata: {e}")
-                space_title = None
-                space_date = None
-                video_space = False
-                expected_duration = 0
-                had_errors = True
-            
-            specified_date = None
-            if args.output:
-                date_match = re.search(r'(\d{4}-\d{2}-\d{2})', args.output)
-                if date_match:
-                    specified_date = date_match.group(1)
-            
-            space_folder = os.path.join(args.output, space_id)
-            os.makedirs(space_folder, exist_ok=True)
-            
-            logging.info(f"Downloading X Space from: {space_url}")
-            
-            temp_file_path, is_new_download = download_space(space_url, user_input['cookie_path'], args.debug)
-            
-            if temp_file_path:
-                if is_new_download:
-                    logging.info("Download complete, verifying...")
-                    if not verify_download(temp_file_path, expected_duration):
-                        logging.error("Download verification failed")
-                        had_errors = True
-                else:
-                    logging.info("Using existing file, skipping download.")
-                
-                try:
-                    # Use space metadata if available, otherwise fall back to specified date
-                    if space_date:
-                        try:
-                            creation_date = datetime.strptime(space_date, "%Y%m%d").strftime("%Y-%m-%d")
-                        except ValueError:
-                            creation_date = get_space_creation_date(temp_file_path, specified_date)
-                            had_errors = True
-                    else:
-                        creation_date = get_space_creation_date(temp_file_path, specified_date)
-
-                    # Create title for metadata and filename
-                    try:
-                        if space_title:
-                            title = str(space_title)
-                            safe_title = sanitize_filename(title)
-                            output_title = f"{creation_date}-{safe_title}-X-Space-#{space_id}"
-                        else:
-                            title = f"X Space #{space_id}"
-                            output_title = f"{creation_date}-X-Space-#{space_id}"
-                    except Exception as e:
-                        logging.error(f"Error processing title: {e}")
-                        title = f"X Space #{space_id}"
-                        output_title = f"{creation_date}-X-Space-#{space_id}"
-                        had_errors = True
-                    
-                    # Add metadata to the M4A file
-                    add_metadata_to_m4a(temp_file_path, title=title, date=creation_date)
-                    
-                    final_output_path = get_unique_output_path(space_folder, output_title, ".m4a")
-                    
-                    try:
-                        shutil.copy2(temp_file_path, final_output_path)
-                        logging.info(f"Successfully copied file to {final_output_path}")
-                        logging.info(f"Original audio file saved to: {os.path.abspath(final_output_path)}")
-                        
-                        file_size_mb = get_file_size_mb(final_output_path)
-                        logging.info(f"File size: {file_size_mb:.2f} MB")
-
-                        logging.info("Attempting to detect long silence...")
-                        long_silence_point = detect_long_silence(final_output_path, max_duration=7200000)  # 2 hours in milliseconds
-                        if long_silence_point:
-                            logging.info(f"Detected long silence at {long_silence_point/1000:.2f} seconds ({long_silence_point/60000:.2f} minutes). Trimming audio...")
-                            trimmed_output_path = get_unique_output_path(space_folder, f"{output_title}_trimmed", ".m4a")
-                            trim_audio(final_output_path, trimmed_output_path, long_silence_point)
-                            
-                            # Check if the trimmed file is significantly smaller
-                            trimmed_size_mb = get_file_size_mb(trimmed_output_path)
-                            if trimmed_size_mb < file_size_mb * 0.9:  # If trimmed file is at least 10% smaller
-                                logging.info(f"Trimmed file is smaller ({trimmed_size_mb:.2f} MB). Keeping trimmed version.")
-                                os.remove(final_output_path)
-                                final_output_path = trimmed_output_path
-                            else:
-                                logging.info("Trimmed file is not significantly smaller. Keeping original file.")
-                                os.remove(trimmed_output_path)
-                        else:
-                            logging.info("No long silences detected after 2 hours. Keeping original file.")
-                        
-                        # Copy metadata files to destination
-                        metadata_files = glob.glob(os.path.join(TEMP_DIR, f'X-Space-{space_id}*.*'))
-                        for metadata_file in metadata_files:
-                            if any(x in metadata_file for x in ['_metadata.json', '.info.json']):
-                                dest_metadata = os.path.join(space_folder, os.path.basename(metadata_file))
-                                shutil.copy2(metadata_file, dest_metadata)
-                                logging.debug(f"Copied metadata file to: {dest_metadata}")
-                        
-                        # Handle additional output location if specified
-                        if args.output_copy:
-                            copy_to_additional_location(final_output_path, args.output_copy, space_id)
-                        
-                        # Clean up duplicate files in destination
-                        cleanup_destination_duplicates(space_folder, space_id)
-                        
-                        success = True and not had_errors
-                        
-                    except Exception as e:
-                        logging.error(f"Error processing audio file: {str(e)}")
-                        logging.error(f"Error type: {type(e).__name__}")
-                        logging.error(f"Error occurred in file: {__file__}")
-                        logging.error(f"Error occurred on line: {sys.exc_info()[-1].tb_lineno}")
-                        had_errors = True
-                except Exception as e:
-                    logging.error(f"Error processing file: {e}")
-                    had_errors = True
-                    raise
-            else:
-                logging.error("Failed to download or locate the space file.")
-                had_errors = True
-                raise Exception("Failed to download or locate the space file.")
-        
-        except subprocess.CalledProcessError as e:
-            logging.error(f"Error occurred during download: {e}")
-            had_errors = True
-        except Exception as e:
-            logging.error(f"Failed to process the X Space: {str(e)}")
-            had_errors = True
-        finally:
-            try:
-                # Generate summary report
-                if success and os.path.exists(metadata_path):
-                    generate_summary_report(
-                        metadata_path=metadata_path,
-                        space_id=space_id,
-                        final_output_path=final_output_path,
-                        duration=expected_duration,
-                        success=success,
-                        had_errors=had_errors
-                    )
-            except Exception as e:
-                logging.error(f"Error generating summary report: {e}")
-                had_errors = True
-
-            if success and not had_errors:
-                if is_new_download and os.path.exists(temp_file_path):
-                    try:
-                        os.remove(temp_file_path)
-                        logging.info(f"Removed temporary file: {temp_file_path}")
-                    except Exception as e:
-                        logging.warning(f"Failed to remove temporary file: {e}")
-                        had_errors = True
-                cleanup_temp_files(space_id=space_id, preserve_metadata=True)
-                logging.info("All temporary files cleaned up.")
-            else:
-                logging.info("Keeping temporary files for debugging purposes.")
-    
+    if args.url:
+        url = args.url
+        if 'twitter.com' in url or 'x.com' in url:
+            space_id = url.split('/')[-1]
+            process_x_space(url, user_input, space_id, args)
+        elif 'twitch.tv' in url:
+            process_twitch_vod(url, args)
+        else:
+            logging.error("Unsupported URL. Please provide a valid X Space or Twitch VOD URL.")
     else:
-        logging.error("Please provide a direct space link using the -s option.")
+        logging.error("Please provide a direct URL using the -u option.")
+
+def process_x_space(space_url, user_input, space_id, args):
+    try:
+        metadata_command = [
+            'yt-dlp',
+            '--cookies', user_input['cookie_path'],
+            '--dump-json',
+            '--no-download',
+            space_url
+        ]
+        
+        metadata_result = subprocess.run(metadata_command, capture_output=True, text=True, check=True)
+        space_info = json.loads(metadata_result.stdout)
+        
+        space_title = str(space_info.get('title', ''))
+        space_date = space_info.get('upload_date', '')
+        
+        space_folder = os.path.join(args.output, space_id)
+        os.makedirs(space_folder, exist_ok=True)
+
+        temp_file_path, is_new_download = download_space(space_url, user_input['cookie_path'], args.debug)
+
+        if temp_file_path:
+            add_metadata_to_m4a(temp_file_path, title=space_title, date=space_date)
+
+            final_output_path = get_unique_output_path(space_folder, f"{space_title}-X-Space-#{space_id}", ".m4a")
+            shutil.move(temp_file_path, final_output_path)
+
+            logging.info(f"Successfully downloaded and moved file to {final_output_path}")
+
+            file_duration = get_audio_duration(final_output_path)
+            logging.info(f"File duration: {file_duration/60:.1f} minutes")
+
+            if args.output_copy:
+                copy_to_additional_location(final_output_path, args.output_copy, space_id)
+
+            metadata_files = glob.glob(os.path.join(TEMP_DIR, f'X-Space-{space_id}*.*'))
+            for metadata_file in metadata_files:
+                if any(x in metadata_file for x in ['_metadata.json', '.info.json']):
+                    dest_metadata_file_name = os.path.basename(metadata_file)
+                    dest_metadata_file_path = os.path.join(space_folder, dest_metadata_file_name)
+                    shutil.copy2(metadata_file, dest_metadata_file_path)
+                    logging.debug(f"Copied metadata file to: {dest_metadata_file_path}")
+
+            success = True
+
+        else:
+            logging.error("Failed to download or locate the X Space media file.")
+            had_errors = True
+
+    except Exception as e:
+        logging.error(f"Error processing X Space: {str(e)}")
+        had_errors = True
+
+def process_twitch_vod(vod_url, args):
+    vod_id = vod_url.split('/')[-1]
+    output_folder = os.path.join(args.output, f"twitch_{vod_id}")
+    os.makedirs(output_folder, exist_ok=True)
+    
+    output_path = os.path.join(output_folder, f"twitch_vod_{vod_id}.mp4")
+    downloaded_file = download_twitch_vod(vod_url, output_path)
+    
+    if downloaded_file:
+        logging.info(f"Twitch VOD downloaded: {downloaded_file}")
+    else:
+        logging.error("Failed to download Twitch VOD")
 
 if __name__ == "__main__":
     main()
