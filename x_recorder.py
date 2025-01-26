@@ -1,21 +1,12 @@
 import argparse
 import subprocess
 import os
-import sys
 import glob
 import json
 import shutil
-import re
 import logging
 from datetime import datetime
 from dataclasses import dataclass
-import requests
-from dotenv import load_dotenv
-
-load_dotenv()
-
-TWITCH_CLIENT_ID = os.getenv('TWITCH_CLIENT_ID')
-TWITCH_OAUTH_TOKEN = os.getenv('TWITCH_OAUTH_TOKEN')
 
 # Configuration
 DEFAULT_DOWNLOAD_DIR = '/mnt/e/AV/Capture/X-Recorder/'
@@ -461,42 +452,31 @@ def process_twitch_vod(vod_url, args):
     os.makedirs(output_folder, exist_ok=True)
     
     output_path = os.path.join(output_folder, f"twitch_vod_{vod_id}.mp4")
-    metadata_path = os.path.join(output_folder, f"twitch_vod_{vod_id}_metadata.json")
     
-    # Fetch metadata from Twitch API
-    headers = {
-        'Client-ID': TWITCH_CLIENT_ID,
-        'Authorization': f'Bearer {TWITCH_OAUTH_TOKEN}'
-    }
-    response = requests.get(f'https://api.twitch.tv/helix/videos?id={vod_id}', headers=headers)
-    
-    if response.status_code == 200:
-        vod_metadata = response.json()['data'][0]
-        with open(metadata_path, 'w', encoding='utf-8') as f:
-            json.dump(vod_metadata, f, indent=2, ensure_ascii=False)
-        logging.info(f"Twitch VOD metadata saved to: {metadata_path}")
-    else:
-        logging.error(f"Failed to fetch Twitch VOD metadata: {response.status_code}")
-        vod_metadata = {}
-
     downloaded_file = download_twitch_vod(vod_url, output_path)
     
     if downloaded_file:
         logging.info(f"Twitch VOD downloaded: {downloaded_file}")
         
+        file_duration = get_audio_duration(downloaded_file)
+        logging.info(f"File duration: {file_duration/60:.1f} minutes")
+        
+        if args.output_copy:
+            copy_to_additional_location(downloaded_file, args.output_copy, vod_id)
+        
+        # Extract metadata using ffprobe
+        metadata = extract_metadata(downloaded_file)
+        title = metadata.get('format', {}).get('tags', {}).get('title', f'Twitch VOD {vod_id}')
+        created_at = metadata.get('format', {}).get('tags', {}).get('creation_time', '')
+        
         # Add metadata to the video file
         try:
-            title = vod_metadata.get('title', f'Twitch VOD {vod_id}')
-            created_at = vod_metadata.get('created_at', '')
-            user_name = vod_metadata.get('user_name', '')
-            
             command = [
                 'ffmpeg',
                 '-i', downloaded_file,
                 '-c', 'copy',
                 '-metadata', f'title={title}',
                 '-metadata', f'date={created_at}',
-                '-metadata', f'artist={user_name}',
                 '-metadata', f'comment=Twitch VOD ID: {vod_id}',
                 f'{downloaded_file}_temp.mp4'
             ]
@@ -507,6 +487,36 @@ def process_twitch_vod(vod_url, args):
             logging.error(f"Error adding metadata to Twitch VOD: {str(e)}")
     else:
         logging.error("Failed to download Twitch VOD")
+
+def download_twitch_vod(vod_url, output_path):
+    """Download Twitch VOD using yt-dlp with progress updates."""
+    try:
+        command = [
+            'yt-dlp',
+            '--no-part',
+            '--no-continue',
+            '-o', output_path,
+            '--progress',
+            vod_url
+        ]
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+        
+        for line in process.stdout:
+            if '[download]' in line:
+                logging.info(line.strip())
+        
+        process.wait()
+        
+        if process.returncode == 0:
+            logging.info(f"Successfully downloaded Twitch VOD to {output_path}")
+            return output_path
+        else:
+            logging.error(f"Error downloading Twitch VOD: yt-dlp exited with code {process.returncode}")
+            return None
+    except Exception as e:
+        logging.error(f"Error downloading Twitch VOD: {e}")
+        return None
+
 
 def process_x_space(space_url, user_input, space_id, args):
     try:
