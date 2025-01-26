@@ -455,6 +455,112 @@ def parse_arguments():
                         help="Direct link to a specific X Space or Twitch VOD")
     return parser.parse_args()
 
+def process_twitch_vod(vod_url, args):
+    vod_id = vod_url.split('/')[-1]
+    output_folder = os.path.join(args.output, f"twitch_{vod_id}")
+    os.makedirs(output_folder, exist_ok=True)
+    
+    output_path = os.path.join(output_folder, f"twitch_vod_{vod_id}.mp4")
+    metadata_path = os.path.join(output_folder, f"twitch_vod_{vod_id}_metadata.json")
+    
+    # Fetch metadata from Twitch API
+    headers = {
+        'Client-ID': TWITCH_CLIENT_ID,
+        'Authorization': f'Bearer {TWITCH_OAUTH_TOKEN}'
+    }
+    response = requests.get(f'https://api.twitch.tv/helix/videos?id={vod_id}', headers=headers)
+    
+    if response.status_code == 200:
+        vod_metadata = response.json()['data'][0]
+        with open(metadata_path, 'w', encoding='utf-8') as f:
+            json.dump(vod_metadata, f, indent=2, ensure_ascii=False)
+        logging.info(f"Twitch VOD metadata saved to: {metadata_path}")
+    else:
+        logging.error(f"Failed to fetch Twitch VOD metadata: {response.status_code}")
+        vod_metadata = {}
+
+    downloaded_file = download_twitch_vod(vod_url, output_path)
+    
+    if downloaded_file:
+        logging.info(f"Twitch VOD downloaded: {downloaded_file}")
+        
+        # Add metadata to the video file
+        try:
+            title = vod_metadata.get('title', f'Twitch VOD {vod_id}')
+            created_at = vod_metadata.get('created_at', '')
+            user_name = vod_metadata.get('user_name', '')
+            
+            command = [
+                'ffmpeg',
+                '-i', downloaded_file,
+                '-c', 'copy',
+                '-metadata', f'title={title}',
+                '-metadata', f'date={created_at}',
+                '-metadata', f'artist={user_name}',
+                '-metadata', f'comment=Twitch VOD ID: {vod_id}',
+                f'{downloaded_file}_temp.mp4'
+            ]
+            subprocess.run(command, check=True)
+            os.replace(f'{downloaded_file}_temp.mp4', downloaded_file)
+            logging.info("Metadata added to Twitch VOD file")
+        except Exception as e:
+            logging.error(f"Error adding metadata to Twitch VOD: {str(e)}")
+    else:
+        logging.error("Failed to download Twitch VOD")
+
+def process_x_space(space_url, user_input, space_id, args):
+    try:
+        metadata_command = [
+            'yt-dlp',
+            '--cookies', user_input['cookie_path'],
+            '--dump-json',
+            '--no-download',
+            space_url
+        ]
+        
+        metadata_result = subprocess.run(metadata_command, capture_output=True, text=True, check=True)
+        space_info = json.loads(metadata_result.stdout)
+        
+        space_title = str(space_info.get('title', ''))
+        space_date = space_info.get('upload_date', '')
+        
+        space_folder = os.path.join(args.output, space_id)
+        os.makedirs(space_folder, exist_ok=True)
+
+        temp_file_path, is_new_download = download_space(space_url, user_input['cookie_path'], args.debug)
+
+        if temp_file_path:
+            add_metadata_to_m4a(temp_file_path, title=space_title, date=space_date)
+
+            final_output_path = get_unique_output_path(space_folder, f"{space_title}-X-Space-#{space_id}", ".m4a")
+            shutil.move(temp_file_path, final_output_path)
+
+            logging.info(f"Successfully downloaded and moved file to {final_output_path}")
+
+            file_duration = get_audio_duration(final_output_path)
+            logging.info(f"File duration: {file_duration/60:.1f} minutes")
+
+            if args.output_copy:
+                copy_to_additional_location(final_output_path, args.output_copy, space_id)
+
+            metadata_files = glob.glob(os.path.join(TEMP_DIR, f'X-Space-{space_id}*.*'))
+            for metadata_file in metadata_files:
+                if any(x in metadata_file for x in ['_metadata.json', '.info.json']):
+                    dest_metadata_file_name = os.path.basename(metadata_file)
+                    dest_metadata_file_path = os.path.join(space_folder, dest_metadata_file_name)
+                    shutil.copy2(metadata_file, dest_metadata_file_path)
+                    logging.debug(f"Copied metadata file to: {dest_metadata_file_path}")
+
+            success = True
+
+        else:
+            logging.error("Failed to download or locate the X Space media file.")
+            had_errors = True
+
+    except Exception as e:
+        logging.error(f"Error processing X Space: {str(e)}")
+        had_errors = True
+
 def main():
     logging.info(f"Temporary files will be stored in: {TEMP_DIR}")
     
