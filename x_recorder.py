@@ -458,25 +458,33 @@ def process_twitch_vod(vod_url, args):
     if downloaded_file:
         logging.info(f"Twitch VOD downloaded: {downloaded_file}")
         
+        # Extract metadata from the downloaded file
+        metadata = extract_metadata(downloaded_file)
+        tags = metadata.get('format', {}).get('tags', {})
+        
+        # Display extracted metadata
+        logging.info("Extracted metadata:")
+        logging.info(f"Title: {tags.get('title', 'Unknown')}")
+        logging.info(f"Streamer: {tags.get('artist', 'Unknown')}")
+        logging.info(f"Stream Date: {tags.get('date', 'Unknown')}")
+        logging.info(f"Twitch VOD ID: {tags.get('comment', 'Unknown')}")
+        
         file_duration = get_audio_duration(downloaded_file)
         logging.info(f"File duration: {file_duration/60:.1f} minutes")
         
-        if args.output_copy:
-            copy_to_additional_location(downloaded_file, args.output_copy, vod_id)
-        
-        # Extract metadata using ffprobe
-        metadata = extract_metadata(downloaded_file)
-        title = metadata.get('format', {}).get('tags', {}).get('title', f'Twitch VOD {vod_id}')
-        created_at = metadata.get('format', {}).get('tags', {}).get('creation_time', '')
-        
         # Add metadata to the video file
         try:
+            title = tags.get('title', f'Twitch VOD {vod_id}')
+            created_at = tags.get('date', '')
+            user_name = tags.get('artist', '')
+            
             command = [
                 'ffmpeg',
                 '-i', downloaded_file,
                 '-c', 'copy',
                 '-metadata', f'title={title}',
                 '-metadata', f'date={created_at}',
+                '-metadata', f'artist={user_name}',
                 '-metadata', f'comment=Twitch VOD ID: {vod_id}',
                 f'{downloaded_file}_temp.mp4'
             ]
@@ -485,6 +493,9 @@ def process_twitch_vod(vod_url, args):
             logging.info("Metadata added to Twitch VOD file")
         except Exception as e:
             logging.error(f"Error adding metadata to Twitch VOD: {str(e)}")
+        
+        if args.output_copy:
+            copy_to_additional_location(downloaded_file, args.output_copy, vod_id)
     else:
         logging.error("Failed to download Twitch VOD")
 
@@ -516,7 +527,6 @@ def download_twitch_vod(vod_url, output_path):
     except Exception as e:
         logging.error(f"Error downloading Twitch VOD: {e}")
         return None
-
 
 def process_x_space(space_url, user_input, space_id, args):
     try:
