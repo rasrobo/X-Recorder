@@ -367,23 +367,6 @@ def download_space(space_url, cookie_path, debug=False):
         logging.error(f"Error downloading space: {e}")
     return None, False
 
-def add_metadata_to_m4a(file_path, title, date):
-    """Add metadata to M4A file."""
-    try:
-        command = [
-            'ffmpeg',
-            '-i', file_path,
-            '-c', 'copy',
-            '-metadata', f'title={title}',
-            '-metadata', f'date={date}',
-            f'{file_path}_temp.m4a'
-        ]
-        subprocess.run(command, check=True)
-        os.replace(f'{file_path}_temp.m4a', file_path)
-        logging.info(f"Metadata added to {file_path}: title={title}, date={date}")
-    except Exception as e:
-        logging.error(f"Error adding metadata to file: {e}")
-
 def get_unique_output_path(base_path, output_title, extension):
     """Get a unique output path, checking for both exact matches and similar filenames."""
     counter = 1
@@ -398,9 +381,36 @@ def get_unique_output_path(base_path, output_title, extension):
             return file_path
         counter += 1
 
+def add_metadata_to_m4a(file_path, title, date):
+    """Add metadata to M4A file."""
+    try:
+        # Check if file exists and is an audio file
+        if not os.path.exists(file_path) or not file_path.endswith(('.m4a', '.mp3', '.mp4')):
+            logging.error(f"Invalid file for metadata addition: {file_path}")
+            return
+
+        command = [
+            'ffmpeg',
+            '-i', file_path,
+            '-c', 'copy',
+            '-metadata', f'title={title}',
+            '-metadata', f'date={date}',
+            f'{file_path}_temp.m4a'
+        ]
+        subprocess.run(command, check=True)
+        os.replace(f'{file_path}_temp.m4a', file_path)
+        logging.info(f"Metadata added to {file_path}: title={title}, date={date}")
+    except Exception as e:
+        logging.error(f"Error adding metadata to file: {e}")
+
 def get_audio_duration(file_path):
     """Get audio duration using ffprobe."""
     try:
+        # Verify file exists and is audio/video
+        if not os.path.exists(file_path):
+            logging.error(f"File not found: {file_path}")
+            return 0
+            
         command = [
             'ffprobe',
             '-v', 'error',
@@ -409,7 +419,11 @@ def get_audio_duration(file_path):
             file_path
         ]
         result = subprocess.run(command, capture_output=True, text=True, check=True)
-        return float(result.stdout)
+        duration = float(result.stdout.strip())
+        return duration
+    except subprocess.CalledProcessError as e:
+        logging.error(f"FFprobe command failed: {e}")
+        return 0
     except Exception as e:
         logging.error(f"Error getting audio duration: {e}")
         return 0
@@ -601,7 +615,7 @@ def main():
         elif 'twitch.tv' in url:
             process_twitch_vod(url, args)
         else:
-            logging.error("Unsupported URL. Please provide a valid X Space or Twitch VOD URL.")
+            logging.error("UnsupportedjaURL. Please provide a valid X Space or Twitch VOD URL.")
     else:
         logging.error("Please provide a direct URL using the -u option.")
 
