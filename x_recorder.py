@@ -384,9 +384,9 @@ def get_unique_output_path(base_path, output_title, extension):
 def add_metadata_to_m4a(file_path, title, date):
     """Add metadata to M4A file."""
     try:
-        # Check if file exists and is an audio file
-        if not os.path.exists(file_path) or not file_path.endswith(('.m4a', '.mp3', '.mp4')):
-            logging.error(f"Invalid file for metadata addition: {file_path}")
+        # Skip non-media files
+        if not os.path.exists(file_path) or not file_path.lower().endswith(('.m4a', '.mp3', '.mp4')):
+            logging.debug(f"Skipping metadata addition for non-media file: {file_path}")
             return
 
         command = [
@@ -397,7 +397,7 @@ def add_metadata_to_m4a(file_path, title, date):
             '-metadata', f'date={date}',
             f'{file_path}_temp.m4a'
         ]
-        subprocess.run(command, check=True)
+        subprocess.run(command, check=True, capture_output=True)
         os.replace(f'{file_path}_temp.m4a', file_path)
         logging.info(f"Metadata added to {file_path}: title={title}, date={date}")
     except Exception as e:
@@ -412,13 +412,14 @@ def get_audio_duration(file_path):
             
         command = [
             'ffprobe',
-            '-v', 'error',
-            '-show_entries', 'format=duration',
-            '-of', 'default=noprint_wrappers=1:nokey=1',
+            '-v', 'quiet',
+            '-print_format', 'json',
+            '-show_format',
             file_path
         ]
         result = subprocess.run(command, capture_output=True, text=True, check=True)
-        duration = float(result.stdout.strip())
+        data = json.loads(result.stdout)
+        duration = float(data['format']['duration'])
         return duration
     except subprocess.CalledProcessError as e:
         logging.error(f"FFprobe command failed: {e}")
