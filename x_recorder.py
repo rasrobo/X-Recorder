@@ -367,20 +367,6 @@ def download_space(space_url, cookie_path, debug=False):
         logging.error(f"Error downloading space: {e}")
     return None, False
 
-def get_unique_output_path(base_path, output_title, extension):
-    """Get a unique output path, checking for both exact matches and similar filenames."""
-    counter = 1
-    while True:
-        if counter == 1:
-            file_name = f"{output_title}{extension}"
-        else:
-            file_name = f"{output_title}_{counter}{extension}"
-        
-        file_path = os.path.join(base_path, file_name)
-        if not os.path.exists(file_path):
-            return file_path
-        counter += 1
-
 def add_metadata_to_m4a(file_path, title, date):
     """Add metadata to M4A file."""
     try:
@@ -542,6 +528,28 @@ def download_twitch_vod(vod_url, output_path):
         logging.error(f"Error downloading Twitch VOD: {e}")
         return None
 
+def get_unique_output_path(base_path, date, title, extension):
+    """Get a unique output path with date-first naming convention."""
+    try:
+        # Format date as YYYYMMDD
+        formatted_date = datetime.strptime(date, "%Y%m%d").strftime("%Y%m%d")
+        sanitized_title = sanitize_filename(title)
+        
+        counter = 1
+        while True:
+            if counter == 1:
+                file_name = f"{formatted_date} - {sanitized_title}{extension}"
+            else:
+                file_name = f"{formatted_date} - {sanitized_title}_{counter}{extension}"
+            
+            file_path = os.path.join(base_path, file_name)
+            if not os.path.exists(file_path):
+                return file_path
+            counter += 1
+    except Exception as e:
+        logging.error(f"Error creating output path: {e}")
+        return os.path.join(base_path, f"{date}_recording{extension}")
+
 def process_x_space(space_url, user_input, space_id, args):
     try:
         metadata_command = [
@@ -566,7 +574,12 @@ def process_x_space(space_url, user_input, space_id, args):
         if temp_file_path:
             add_metadata_to_m4a(temp_file_path, title=space_title, date=space_date)
 
-            final_output_path = get_unique_output_path(space_folder, f"{space_title}-X-Space-#{space_id}", ".m4a")
+            final_output_path = get_unique_output_path(
+                space_folder,
+                space_date,
+                space_title,
+                ".m4a"
+            )
             shutil.move(temp_file_path, final_output_path)
 
             logging.info(f"Successfully downloaded and moved file to {final_output_path}")
