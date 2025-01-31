@@ -406,7 +406,6 @@ def add_metadata_to_m4a(file_path, title, date):
 def get_audio_duration(file_path):
     """Get audio duration using ffprobe."""
     try:
-        # Verify file exists and is audio/video
         if not os.path.exists(file_path):
             logging.error(f"File not found: {file_path}")
             return 0
