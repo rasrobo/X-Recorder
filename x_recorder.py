@@ -448,10 +448,14 @@ def parse_arguments():
 
 def process_twitch_vod(vod_url, args):
     vod_id = vod_url.split('/')[-1]
+    streamer_name = vod_url.split('/')[3]  # Extract streamer name from URL
     output_folder = os.path.join(args.output, f"twitch_{vod_id}")
     os.makedirs(output_folder, exist_ok=True)
     
-    output_path = os.path.join(output_folder, f"twitch_vod_{vod_id}.mp4")
+    # Create a formatted filename with streamer name, date, and title
+    formatted_filename = f"{streamer_name} - {datetime.now().strftime('%Y%m%d')} - Stream"
+    formatted_filename = sanitize_filename(formatted_filename)
+    output_path = os.path.join(output_folder, f"{formatted_filename}.mp4")
     
     downloaded_file = download_twitch_vod(vod_url, output_path)
     
@@ -462,29 +466,34 @@ def process_twitch_vod(vod_url, args):
         metadata = extract_metadata(downloaded_file)
         tags = metadata.get('format', {}).get('tags', {})
         
+        # Get stream title if available
+        stream_title = tags.get('title', '')
+        if stream_title and stream_title != f'Twitch VOD {vod_id}':
+            # Update filename to include stream title
+            formatted_filename = f"{streamer_name} - {datetime.now().strftime('%Y%m%d')} - {stream_title}"
+            formatted_filename = sanitize_filename(formatted_filename)
+            new_output_path = os.path.join(output_folder, f"{formatted_filename}.mp4")
+            os.rename(downloaded_file, new_output_path)
+            downloaded_file = new_output_path
+        
         # Display extracted metadata
         logging.info("Extracted metadata:")
-        logging.info(f"Title: {tags.get('title', 'Unknown')}")
-        logging.info(f"Streamer: {tags.get('artist', 'Unknown')}")
+        logging.info(f"Title: {stream_title}")
+        logging.info(f"Streamer: {streamer_name}")
         logging.info(f"Stream Date: {tags.get('date', 'Unknown')}")
-        logging.info(f"Twitch VOD ID: {tags.get('comment', 'Unknown')}")
         
         file_duration = get_audio_duration(downloaded_file)
         logging.info(f"File duration: {file_duration/60:.1f} minutes")
         
         # Add metadata to the video file
         try:
-            title = tags.get('title', f'Twitch VOD {vod_id}')
-            created_at = tags.get('date', '')
-            user_name = tags.get('artist', '')
-            
             command = [
                 'ffmpeg',
                 '-i', downloaded_file,
                 '-c', 'copy',
-                '-metadata', f'title={title}',
-                '-metadata', f'date={created_at}',
-                '-metadata', f'artist={user_name}',
+                '-metadata', f'title={stream_title}',
+                '-metadata', f'artist={streamer_name}',
+                '-metadata', f'date={datetime.now().strftime("%Y%m%d")}',
                 '-metadata', f'comment=Twitch VOD ID: {vod_id}',
                 f'{downloaded_file}_temp.mp4'
             ]
