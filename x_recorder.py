@@ -448,65 +448,71 @@ def parse_arguments():
 
 def process_twitch_vod(vod_url, args):
     vod_id = vod_url.split('/')[-1]
-    streamer_name = vod_url.split('/')[3]  # Extract streamer name from URL
-    output_folder = os.path.join(args.output, f"twitch_{vod_id}")
-    os.makedirs(output_folder, exist_ok=True)
     
-    # Create a formatted filename with streamer name, date, and title
-    formatted_filename = f"{streamer_name} - {datetime.now().strftime('%Y%m%d')} - Stream"
-    formatted_filename = sanitize_filename(formatted_filename)
-    output_path = os.path.join(output_folder, f"{formatted_filename}.mp4")
-    
-    downloaded_file = download_twitch_vod(vod_url, output_path)
-    
-    if downloaded_file:
-        logging.info(f"Twitch VOD downloaded: {downloaded_file}")
+    # First get metadata using yt-dlp
+    try:
+        metadata_command = [
+            'yt-dlp',
+            '--dump-json',
+            '--no-download',
+            vod_url
+        ]
+        metadata_result = subprocess.run(metadata_command, capture_output=True, text=True, check=True)
+        vod_info = json.loads(metadata_result.stdout)
         
-        # Extract metadata from the downloaded file
-        metadata = extract_metadata(downloaded_file)
-        tags = metadata.get('format', {}).get('tags', {})
+        # Extract proper metadata
+        streamer_name = vod_info.get('uploader', '')
+        stream_title = vod_info.get('title', '')
+        stream_date = vod_info.get('timestamp', '')  # Get actual stream date from metadata
         
-        # Get stream title if available
-        stream_title = tags.get('title', '')
-        if stream_title and stream_title != f'Twitch VOD {vod_id}':
-            # Update filename to include stream title
-            formatted_filename = f"{streamer_name} - {datetime.now().strftime('%Y%m%d')} - {stream_title}"
-            formatted_filename = sanitize_filename(formatted_filename)
-            new_output_path = os.path.join(output_folder, f"{formatted_filename}.mp4")
-            os.rename(downloaded_file, new_output_path)
-            downloaded_file = new_output_path
+        if stream_date:
+            formatted_date = datetime.fromtimestamp(stream_date).strftime('%Y%m%d')
+        else:
+            formatted_date = datetime.now().strftime('%Y%m%d')
+            logging.warning("Could not get stream date from metadata, using current date")
         
-        # Display extracted metadata
-        logging.info("Extracted metadata:")
-        logging.info(f"Title: {stream_title}")
-        logging.info(f"Streamer: {streamer_name}")
-        logging.info(f"Stream Date: {tags.get('date', 'Unknown')}")
+        # Create formatted directory name
+        dir_name = f"{streamer_name} - {formatted_date} - {stream_title}"
+        dir_name = sanitize_filename(dir_name)
+        output_folder = os.path.join(args.output, dir_name)
+        os.makedirs(output_folder, exist_ok=True)
         
-        file_duration = get_audio_duration(downloaded_file)
-        logging.info(f"File duration: {file_duration/60:.1f} minutes")
+        # Create formatted filename
+        formatted_filename = f"{streamer_name} - {formatted_date} - {stream_title}.mp4"
+        formatted_filename = sanitize_filename(formatted_filename)
+        output_path = os.path.join(output_folder, formatted_filename)
         
-        # Add metadata to the video file
-        try:
-            command = [
-                'ffmpeg',
-                '-i', downloaded_file,
-                '-c', 'copy',
-                '-metadata', f'title={stream_title}',
-                '-metadata', f'artist={streamer_name}',
-                '-metadata', f'date={datetime.now().strftime("%Y%m%d")}',
-                '-metadata', f'comment=Twitch VOD ID: {vod_id}',
-                f'{downloaded_file}_temp.mp4'
-            ]
-            subprocess.run(command, check=True)
-            os.replace(f'{downloaded_file}_temp.mp4', downloaded_file)
-            logging.info("Metadata added to Twitch VOD file")
-        except Exception as e:
-            logging.error(f"Error adding metadata to Twitch VOD: {str(e)}")
+        downloaded_file = download_twitch_vod(vod_url, output_path)
         
-        if args.output_copy:
-            copy_to_additional_location(downloaded_file, args.output_copy, vod_id)
-    else:
-        logging.error("Failed to download Twitch VOD")
+        if downloaded_file:
+            logging.info(f"Twitch VOD downloaded: {downloaded_file}")
+            
+            # Add metadata to the video file
+            try:
+                command = [
+                    'ffmpeg',
+                    '-i', downloaded_file,
+                    '-c', 'copy',
+                    '-metadata', f'title={stream_title}',
+                    '-metadata', f'artist={streamer_name}',
+                    '-metadata', f'date={formatted_date}',
+                    '-metadata', f'comment=Twitch VOD ID: {vod_id}',
+                    f'{downloaded_file}_temp.mp4'
+                ]
+                subprocess.run(command, check=True)
+                os.replace(f'{downloaded_file}_temp.mp4', downloaded_file)
+                logging.info("Metadata added to Twitch VOD file")
+            except Exception as e:
+                logging.error(f"Error adding metadata to Twitch VOD: {str(e)}")
+            
+            if args.output_copy:
+                copy_to_additional_location(downloaded_file, args.output_copy, dir_name)
+        else:
+            logging.error("Failed to download Twitch VOD")
+            
+    except Exception as e:
+        logging.error(f"Error processing Twitch VOD: {str(e)}")
+
 
 def download_twitch_vod(vod_url, output_path):
     """Download Twitch VOD using yt-dlp with progress updates."""
@@ -637,7 +643,7 @@ def main():
         elif 'twitch.tv' in url:
             process_twitch_vod(url, args)
         else:
-            logging.error("UnsupportedjaURL. Please provide a valid X Space or Twitch VOD URL.")
+            logging.error("Unsupported URL. Please provide a valid X Space or Twitch VOD URL.")
     else:
         logging.error("Please provide a direct URL using the -u option.")
 
