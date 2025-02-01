@@ -398,20 +398,39 @@ def get_audio_duration(file_path):
             
         command = [
             'ffprobe',
-            '-v', 'quiet',
-            '-print_format', 'json',
-            '-show_format',
+            '-v', 'error',  # Changed from quiet to error for better debugging
+            '-select_streams', 'a:0',  # Select first audio stream
+            '-show_entries', 'format=duration',
+            '-of', 'json',
             file_path
         ]
-        result = subprocess.run(command, capture_output=True, text=True, check=True)
+        
+        # Add debug logging
+        logging.debug(f"Running ffprobe command: {' '.join(command)}")
+        
+        result = subprocess.run(command, 
+                              capture_output=True, 
+                              text=True, 
+                              check=True)
+        
+        if result.stderr:
+            logging.error(f"FFprobe stderr: {result.stderr}")
+            
         data = json.loads(result.stdout)
-        duration = float(data['format']['duration'])
+        duration = float(data.get('format', {}).get('duration', 0))
+        
+        logging.debug(f"Extracted duration: {duration} seconds")
         return duration
+        
     except subprocess.CalledProcessError as e:
-        logging.error(f"FFprobe command failed: {e}")
+        logging.error(f"FFprobe command failed with return code {e.returncode}")
+        logging.error(f"stderr: {e.stderr}")
+        return 0
+    except json.JSONDecodeError as e:
+        logging.error(f"Failed to parse FFprobe output: {e}")
         return 0
     except Exception as e:
-        logging.error(f"Error getting audio duration: {e}")
+        logging.error(f"Error getting audio duration: {str(e)}")
         return 0
 
 def download_twitch_vod(vod_url, output_path):
