@@ -415,19 +415,33 @@ def get_audio_duration(file_path):
         return 0
 
 def download_twitch_vod(vod_url, output_path):
-    """Download Twitch VOD using yt-dlp."""
+    """Download Twitch VOD and subtitles using yt-dlp."""
     try:
         command = [
             'yt-dlp',
             '--no-part',
             '--no-continue',
+            '--write-subs',          # Download subtitles if available
+            '--sub-format', 'srt',   # Save in SRT format
+            '--convert-subs', 'srt', # Convert subtitles to SRT
             '-o', output_path,
             vod_url
         ]
-        subprocess.run(command, check=True)
-        logging.info(f"Successfully downloaded Twitch VOD to {output_path}")
-        return output_path
-    except subprocess.CalledProcessError as e:
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+        
+        for line in process.stdout:
+            if '[download]' in line:
+                logging.info(line.strip())
+        
+        process.wait()
+        
+        if process.returncode == 0:
+            logging.info(f"Successfully downloaded Twitch VOD to {output_path}")
+            return output_path
+        else:
+            logging.error(f"Error downloading Twitch VOD: yt-dlp exited with code {process.returncode}")
+            return None
+    except Exception as e:
         logging.error(f"Error downloading Twitch VOD: {e}")
         return None
 
