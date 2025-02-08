@@ -519,7 +519,16 @@ def process_x_space(space_url, user_input, space_id, args):
         space_info = json.loads(metadata_result.stdout)
         
         space_title = str(space_info.get('title', ''))
-        space_date = space_info.get('upload_date', '')
+        
+        # Get the actual recording date from the timestamp if available
+        if space_info.get('release_timestamp'):
+            space_date = datetime.fromtimestamp(space_info['release_timestamp']).strftime('%Y%m%d')
+        elif space_info.get('timestamp'):
+            space_date = datetime.fromtimestamp(space_info['timestamp']).strftime('%Y%m%d')
+        else:
+            # Fallback to current date
+            space_date = datetime.now().strftime('%Y%m%d')
+            logging.warning(f"Could not get recording date from metadata, using current date: {space_date}")
         
         # Create sanitized names for both directory and file
         sanitized_name = f"{space_date}_{sanitize_filename(space_title)}"
@@ -534,7 +543,6 @@ def process_x_space(space_url, user_input, space_id, args):
         if temp_file_path:
             add_metadata_to_m4a(temp_file_path, title=space_title, date=space_date)
 
-            # Use the same sanitized naming convention for the file
             final_output_path = os.path.join(output_folder, f"{sanitized_name}.m4a")
             shutil.move(temp_file_path, final_output_path)
             logging.info(f"Successfully downloaded and moved file to {final_output_path}")
@@ -545,7 +553,6 @@ def process_x_space(space_url, user_input, space_id, args):
             if args.output_copy:
                 copy_to_additional_location(final_output_path, args.output_copy, space_id)
 
-            # Handle metadata files
             metadata_files = glob.glob(os.path.join(TEMP_DIR, f'X-Space-{space_id}*.*'))
             for metadata_file in metadata_files:
                 if any(x in metadata_file for x in ['_metadata.json', '.info.json']):
@@ -553,9 +560,14 @@ def process_x_space(space_url, user_input, space_id, args):
                     dest_metadata_file_path = os.path.join(output_folder, dest_metadata_file_name)
                     shutil.copy2(metadata_file, dest_metadata_file_path)
                     logging.debug(f"Copied metadata file to: {dest_metadata_file_path}")
-
+            return True
+        else:
+            logging.error("Failed to download or locate the X Space media file.")
+            return False
+            
     except Exception as e:
         logging.error(f"Error processing X Space: {str(e)}")
+        return False
 
 def parse_arguments():
     """Parse command line arguments."""
