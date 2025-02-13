@@ -434,9 +434,10 @@ def download_twitch_vod(vod_url, output_path):
         return None
 
 def process_twitch_vod(vod_url, args):
-    # Get VOD metadata first
-    vod_id = vod_url.split('/')[-1]
     try:
+        # Get VOD metadata first
+        vod_id = vod_url.split('/')[-1]
+        
         metadata_command = [
             'yt-dlp',
             '--dump-json',
@@ -445,65 +446,67 @@ def process_twitch_vod(vod_url, args):
         ]
         metadata_result = subprocess.run(metadata_command, capture_output=True, text=True, check=True)
         vod_info = json.loads(metadata_result.stdout)
+        
         # Extract relevant metadata fields from yt-dlp
         streamer_name = vod_info.get('uploader', 'Unknown')
         stream_title = vod_info.get('title', f'Twitch VOD {vod_id}')
-        upload_date = vod_info.get('upload_date', '')
-        if upload_date:
-            formatted_date = datetime.strptime(upload_date, '%Y%m%d').strftime('%Y%m%d')
+        
+        # Get the actual stream date from timestamp
+        if vod_info.get('timestamp'):
+            formatted_date = datetime.fromtimestamp(vod_info['timestamp']).strftime('%Y%m%d')
+        elif vod_info.get('release_timestamp'):
+            formatted_date = datetime.fromtimestamp(vod_info['release_timestamp']).strftime('%Y%m%d')
         else:
-            formatted_date = datetime.now().strftime('%Y%m%d')
+            formatted_date = vod_info.get('upload_date', datetime.now().strftime('%Y%m%d'))
+            logging.warning(f"Could not get stream timestamp, using date: {formatted_date}")
+        
+        # Create POSIX-safe directory name
+        dir_name = f"{formatted_date}_{sanitize_filename(streamer_name)}_{sanitize_filename(stream_title)}"
+        output_folder = os.path.join(args.output, dir_name)
+        os.makedirs(output_folder, exist_ok=True)
+        
+        # Create final output path with same naming convention
+        output_path = os.path.join(output_folder, f"{dir_name}.mp4")
+        
+        downloaded_file = download_twitch_vod(vod_url, output_path)
+        
+        if downloaded_file:
+            logging.info(f"Twitch VOD downloaded: {downloaded_file}")
+            
+            # Add metadata to the video file
+            try:
+                command = [
+                    'ffmpeg',
+                    '-i', downloaded_file,
+                    '-c', 'copy',
+                    '-metadata', f'title={stream_title}',
+                    '-metadata', f'date={formatted_date}',
+                    '-metadata', f'artist={streamer_name}',
+                    '-metadata', f'comment=Twitch VOD ID: {vod_id}',
+                    f'{downloaded_file}_temp.mp4'
+                ]
+                subprocess.run(command, check=True)
+                os.replace(f'{downloaded_file}_temp.mp4', downloaded_file)
+                logging.info("Metadata added to Twitch VOD file")
+                
+                file_duration = get_audio_duration(downloaded_file)
+                logging.info(f"File duration: {file_duration/60:.1f} minutes")
+                
+                if args.output_copy:
+                    copy_to_additional_location(downloaded_file, args.output_copy, dir_name)
+                    
+                return True
+                
+            except Exception as e:
+                logging.error(f"Error adding metadata to Twitch VOD: {str(e)}")
+                return False
+        else:
+            logging.error("Failed to download Twitch VOD")
+            return False
+            
     except Exception as e:
-        logging.error(f"Error fetching VOD metadata: {e}")
-        streamer_name = "Unknown"
-        stream_title = f"Twitch VOD {vod_id}"
-        formatted_date = datetime.now().strftime('%Y%m%d')
-    # Create descriptive directory name
-    dir_name = f"{streamer_name} - {formatted_date} - {stream_title}"
-    dir_name = sanitize_filename(dir_name)
-    output_folder = os.path.join(args.output, dir_name)
-    os.makedirs(output_folder, exist_ok=True)
-    # Create final output path
-    formatted_filename = f"{streamer_name} - {formatted_date} - {stream_title}.mp4"
-    formatted_filename = sanitize_filename(formatted_filename)
-    output_path = os.path.join(output_folder, formatted_filename)
-    downloaded_file = download_twitch_vod(vod_url, output_path)
-    if downloaded_file:
-        logging.info(f"Twitch VOD downloaded: {downloaded_file}")
-        # Extract metadata from the downloaded file
-        metadata = extract_metadata(downloaded_file)
-        tags = metadata.get('format', {}).get('tags', {})
-        logging.info("Extracted metadata:")
-        logging.info(f"Title: {tags.get('title', 'Unknown')}")
-        logging.info(f"Streamer: {tags.get('artist', 'Unknown')}")
-        logging.info(f"Stream Date: {tags.get('date', 'Unknown')}")
-        logging.info(f"Twitch VOD ID: {tags.get('comment', 'Unknown')}")
-        file_duration = get_audio_duration(downloaded_file)
-        logging.info(f"File duration: {file_duration/60:.1f} minutes")
-        # Add metadata to the video file
-        try:
-            title = tags.get('title', f'Twitch VOD {vod_id}')
-            created_at = tags.get('date', '')
-            user_name = tags.get('artist', '')
-            command = [
-                'ffmpeg',
-                '-i', downloaded_file,
-                '-c', 'copy',
-                '-metadata', f'title={title}',
-                '-metadata', f'date={created_at}',
-                '-metadata', f'artist={user_name}',
-                '-metadata', f'comment=Twitch VOD ID: {vod_id}',
-                f'{downloaded_file}_temp.mp4'
-            ]
-            subprocess.run(command, check=True)
-            os.replace(f'{downloaded_file}_temp.mp4', downloaded_file)
-            logging.info("Metadata added to Twitch VOD file")
-        except Exception as e:
-            logging.error(f"Error adding metadata to Twitch VOD: {str(e)}")
-        if args.output_copy:
-            copy_to_additional_location(downloaded_file, args.output_copy, vod_id)
-    else:
-        logging.error("Failed to download Twitch VOD")
+        logging.error(f"Error processing Twitch VOD: {str(e)}")
+        return False
 
 def process_x_space(space_url, user_input, space_id, args):
     try:
