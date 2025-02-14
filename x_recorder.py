@@ -250,6 +250,11 @@ def get_space_creation_date(file_path, specified_date=None):
 def verify_download(file_path, expected_duration=None):
     """Verify downloaded file integrity and duration."""
     try:
+        if not os.path.exists(file_path):
+            logging.error(f"File does not exist: {file_path}")
+            return False
+            
+        logging.debug(f"Verifying file: {file_path}")
         command = [
             'ffprobe',
             '-v', 'error',
@@ -260,15 +265,24 @@ def verify_download(file_path, expected_duration=None):
         ]
         result = subprocess.run(command, capture_output=True, text=True, check=True)
         info = json.loads(result.stdout)
-        duration = float(info.get('format', {}).get('duration', 0))
+        
+        # Check if file has valid format information
+        if not info.get('format'):
+            logging.error("No format information found in file")
+            return False
+            
+        duration = float(info['format'].get('duration', 0))
         if duration < 60:
             logging.warning(f"File duration suspiciously short: {duration/60:.1f} minutes")
             return False
+            
         if expected_duration and abs(duration - expected_duration) > 300:
             logging.warning(f"Duration mismatch: got {duration/60:.1f}min, expected {expected_duration/60:.1f}min")
             return False
+            
         logging.info(f"File duration verified: {duration/60:.1f} minutes")
         return True
+        
     except Exception as e:
         logging.error(f"Error verifying download: {e}")
         return False
@@ -332,34 +346,47 @@ def check_tmp_for_existing_files(space_id):
     return None
 
 def download_space(space_url, cookie_path, debug=False):
-    """Download X Space using yt-dlp."""
+    """Download X Space using yt-dlp with improved temp file handling."""
     try:
-        existing_file = check_tmp_for_existing_files(space_url.split('/')[-1])
-        if existing_file:
-            logging.info(f"Found previously downloaded file at {existing_file}, using it for processing.")
-            return existing_file, False
-        output_template = os.path.join(TEMP_DIR, f'X-Space-%(id)s_temp.%(ext)s')
+        space_id = space_url.split('/')[-1]
+        temp_file_pattern = os.path.join(TEMP_DIR, f'X-Space-{space_id}_temp.*')
+        existing_temp = glob.glob(temp_file_pattern)
+        
+        # Filter for media files only
+        existing_media = [f for f in existing_temp if f.endswith(('.mp4', '.m4a'))]
+        
+        if existing_media:
+            temp_file = existing_media[0]
+            logging.info(f"Found existing temp file: {temp_file}")
+            return temp_file, False
+
+        output_template = os.path.join(TEMP_DIR, f'X-Space-{space_id}_temp.%(ext)s')
         command = [
             'yt-dlp',
             '--no-part',
-            '--no-continue',
             '--cookies', cookie_path,
             '-o', output_template,
             space_url
         ]
         if debug:
             command.insert(1, '-v')
+            
         subprocess.run(command, check=True)
-        downloaded_files = glob.glob(os.path.join(TEMP_DIR, 'X-Space-*_temp.*'))
-        if downloaded_files:
-            return downloaded_files[0], True
+        
+        # Look for newly downloaded media files
+        downloaded_files = glob.glob(temp_file_pattern)
+        media_files = [f for f in downloaded_files if f.endswith(('.mp4', '.m4a'))]
+        
+        if media_files:
+            downloaded_file = media_files[0]
+            logging.info(f"Successfully downloaded file: {downloaded_file}")
+            return downloaded_file, True
         else:
-            raise FileNotFoundError("Downloaded file not found")
-    except subprocess.CalledProcessError as e:
-        logging.error(f"yt-dlp command failed: {e}")
+            raise FileNotFoundError("No media file found after download")
+            
     except Exception as e:
-        logging.error(f"Error downloading space: {e}")
-    return None, False
+        logging.error(f"Download error: {e}")
+        return None, False
 
 def add_metadata_to_m4a(file_path, title, date):
     """Add metadata to M4A file."""
@@ -509,6 +536,7 @@ def process_twitch_vod(vod_url, args):
         return False
 
 def process_x_space(space_url, user_input, space_id, args):
+    temp_file_path = None
     try:
         metadata_command = [
             'yt-dlp',
@@ -544,32 +572,40 @@ def process_x_space(space_url, user_input, space_id, args):
         temp_file_path, is_new_download = download_space(space_url, user_input['cookie_path'], args.debug)
 
         if temp_file_path:
-            add_metadata_to_m4a(temp_file_path, title=space_title, date=space_date)
+            # Verify the downloaded file
+            if not verify_download(temp_file_path):
+                logging.error("Downloaded file verification failed.")
+                # Don't delete temp file on verification failure
+                return False
 
-            final_output_path = os.path.join(output_folder, f"{sanitized_name}.m4a")
-            shutil.move(temp_file_path, final_output_path)
-            logging.info(f"Successfully downloaded and moved file to {final_output_path}")
+            try:
+                add_metadata_to_m4a(temp_file_path, title=space_title, date=space_date)
+                final_output_path = os.path.join(output_folder, f"{sanitized_name}.m4a")
+                shutil.move(temp_file_path, final_output_path)
+                logging.info(f"Successfully downloaded and moved file to {final_output_path}")
 
-            file_duration = get_audio_duration(final_output_path)
-            logging.info(f"File duration: {file_duration/60:.1f} minutes")
+                file_duration = get_audio_duration(final_output_path)
+                if file_duration == 0:
+                    logging.error("Failed to get audio duration, file might be corrupted.")
+                    # Move file back to temp location if duration check fails
+                    shutil.move(final_output_path, temp_file_path)
+                    return False
 
-            if args.output_copy:
-                copy_to_additional_location(final_output_path, args.output_copy, space_id)
+                # Process completed successfully, now we can cleanup
+                cleanup_temp_files(space_id)
+                return True
 
-            metadata_files = glob.glob(os.path.join(TEMP_DIR, f'X-Space-{space_id}*.*'))
-            for metadata_file in metadata_files:
-                if any(x in metadata_file for x in ['_metadata.json', '.info.json']):
-                    dest_metadata_file_name = os.path.basename(metadata_file)
-                    dest_metadata_file_path = os.path.join(output_folder, dest_metadata_file_name)
-                    shutil.copy2(metadata_file, dest_metadata_file_path)
-                    logging.debug(f"Copied metadata file to: {dest_metadata_file_path}")
-            return True
+            except Exception as e:
+                logging.error(f"Error processing file: {e}")
+                # Keep temp file on processing error
+                return False
         else:
             logging.error("Failed to download or locate the X Space media file.")
             return False
             
     except Exception as e:
         logging.error(f"Error processing X Space: {str(e)}")
+        # Keep temp file on any error
         return False
 
 def parse_arguments():
